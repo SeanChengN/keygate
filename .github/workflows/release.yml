@@ -7,11 +7,6 @@ on:
 
 permissions:
   contents: write
-  packages: write
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: tabloy/keygate
 
 jobs:
   release:
@@ -24,41 +19,3 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-
-  docker:
-    name: Docker Image
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set version from tag
-        id: version
-        run: |
-          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          echo "COMMIT=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          build-args: |
-            VERSION=${{ steps.version.outputs.VERSION }}
-            COMMIT=${{ steps.version.outputs.COMMIT }}
-            BUILD_DATE=${{ steps.version.outputs.BUILD_DATE }}
-          tags: |
-            ghcr.io/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.VERSION }}
-            ghcr.io/${{ env.IMAGE_NAME }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max

@@ -52,6 +52,8 @@ One binary. One database. Full control. Free, forever.
 
 Every model in one platform — **subscriptions**, **perpetual**, **trials**, and **floating** (concurrent) licenses. Create, activate, verify, suspend, reinstate, and revoke with full audit trail. Per-device or per-user activation limits with **atomic enforcement** (no double-counting under retry). Grace periods. License keys hashed with SHA-256, encrypted at rest. Signed tokens for offline verification. **`Idempotency-Key` header** support on writes — retries never duplicate.
 
+Manually issued subscriptions use calendar-month or calendar-year periods with end-of-month clamping. The admin console shows commercial expiry and grace separately and can renew exactly one period with a required idempotency key. Early renewals extend the paid-through date; overdue renewals start today. Versioned signed tokens keep the fixed seven-day online lease separate from the commercial expiry and grace period.
+
 Public SDK endpoints (activate / verify / deactivate / usage / download) take `license_key` directly — no embedded API keys to leak from your binaries. Customers can self-serve activation slots from the portal (free up a lost laptop without a support ticket).
 
 ### 🚀 Software Distribution

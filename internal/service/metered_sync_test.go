@@ -75,7 +75,7 @@ func seedMeteredLicense(t *testing.T, s *store.Store, ctx context.Context, event
 	}
 	plan := &model.Plan{
 		ProductID: prod.ID, Name: "Pro", Slug: "pro-" + suffix,
-		LicenseType: "subscription", LicenseModel: "standard",
+		LicenseType: "subscription", BillingInterval: "month", LicenseModel: "standard",
 		GraceDays: 7, MaxActivations: 5,
 	}
 	if err := s.CreatePlan(ctx, plan); err != nil {

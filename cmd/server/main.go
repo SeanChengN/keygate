@@ -818,6 +818,7 @@ func main() {
 	licWrite := v1.Group("/admin", licWriteMW...)
 	relWrite := v1.Group("/admin", relWriteMW...)
 	{
+		adminIdem := middleware.Idempotency(db)
 		admin.GET("/stats", adminH.Stats)
 
 		admin.GET("/products", adminH.ListProducts)
@@ -845,6 +846,7 @@ func main() {
 		licWrite.POST("/licenses/:id/revoke", adminH.RevokeLicense)
 		licWrite.POST("/licenses/:id/suspend", adminH.SuspendLicense)
 		licWrite.POST("/licenses/:id/reinstate", adminH.ReinstateLicense)
+		licWrite.POST("/licenses/:id/renew", adminIdem, adminH.RenewLicense)
 		licWrite.POST("/licenses/:id/change-plan", adminH.ChangeLicensePlan)
 		licWrite.GET("/licenses/:id/usage", adminH.ListLicenseUsage)
 		licWrite.POST("/licenses/:id/usage/reset", adminH.ResetLicenseUsage)

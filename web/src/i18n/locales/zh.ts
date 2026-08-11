@@ -118,6 +118,17 @@ const zh = {
   "plans.allProducts": "全部产品",
 
   // Licenses
+  "licenses.subscriptionIssueHint": "签发后按{period}计算商业到期日；到期后有{days}天商业宽限期。",
+  "licenses.licenseType": "许可类型",
+  "licenses.billingInterval": "订阅周期",
+  "licenses.commercialValidUntil": "商业到期",
+  "licenses.graceEndsAt": "商业宽限截止",
+  "licenses.perpetualLicense": "永久授权",
+  "licenses.notApplicable": "不适用",
+  "licenses.renewOnePeriod": "续期一个周期",
+  "licenses.confirmRenew": "确认续期",
+  "licenses.renewConfirm": "将“{plan}”续期一个{period}周期。提前续费从当前到期日 {date} 顺延；已经逾期则从今天起算。",
+  "licenses.renewed": "许可证续期成功。",
   "licenses.title": "许可证管理",
   "licenses.subtitle": "管理软件许可证。",
   "licenses.issue": "签发许可证",

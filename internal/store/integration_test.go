@@ -2,7 +2,9 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -35,12 +37,13 @@ func createTestLicense(t *testing.T, s *store.Store, ctx context.Context) *model
 		t.Fatalf("create product: %v", err)
 	}
 	plan := &model.Plan{
-		ProductID:    product.ID,
-		Name:         "Test Plan",
-		Slug:         "test-plan-" + suffix,
-		LicenseType:  "subscription",
-		LicenseModel: "standard",
-		GraceDays:    7,
+		ProductID:       product.ID,
+		Name:            "Test Plan",
+		Slug:            "test-plan-" + suffix,
+		LicenseType:     "subscription",
+		BillingInterval: "month",
+		LicenseModel:    "standard",
+		GraceDays:       7,
 	}
 	if err := s.CreatePlan(ctx, plan); err != nil {
 		t.Fatalf("create plan: %v", err)
@@ -171,12 +174,13 @@ func TestCreateLicenseWithSubscription_Atomic(t *testing.T) {
 	}
 
 	plan := &model.Plan{
-		ProductID:    product.ID,
-		Name:         "Pro",
-		Slug:         "pro",
-		LicenseType:  "subscription",
-		LicenseModel: "standard",
-		GraceDays:    7,
+		ProductID:       product.ID,
+		Name:            "Pro",
+		Slug:            "pro",
+		LicenseType:     "subscription",
+		BillingInterval: "month",
+		LicenseModel:    "standard",
+		GraceDays:       7,
 	}
 	if err := s.CreatePlan(ctx, plan); err != nil {
 		t.Fatalf("create plan: %v", err)
@@ -256,6 +260,220 @@ func TestCreateLicenseWithSubscription_Atomic(t *testing.T) {
 	t.Log("transaction test passed: license and subscription created atomically")
 }
 
+func TestManualSubscriptionRenewalAndPlanChange(t *testing.T) {
+	s := setupTestDB(t)
+	defer s.Close()
+	ctx := context.Background()
+	suffix := time.Now().Format("150405.000000")
+
+	product := &model.Product{Name: "Renewal Test", Slug: "renewal-" + suffix, Type: "desktop"}
+	if err := s.CreateProduct(ctx, product); err != nil {
+		t.Fatalf("create product: %v", err)
+	}
+	monthly := &model.Plan{
+		ProductID: product.ID, Name: "Monthly", Slug: "monthly",
+		LicenseType: "subscription", BillingInterval: "month", LicenseModel: "standard", GraceDays: 7,
+	}
+	yearly := &model.Plan{
+		ProductID: product.ID, Name: "Yearly", Slug: "yearly",
+		LicenseType: "subscription", BillingInterval: "year", LicenseModel: "standard", GraceDays: 7,
+	}
+	if err := s.CreatePlan(ctx, monthly); err != nil {
+		t.Fatalf("create monthly plan: %v", err)
+	}
+	if err := s.CreatePlan(ctx, yearly); err != nil {
+		t.Fatalf("create yearly plan: %v", err)
+	}
+	webhook := &model.Webhook{
+		ProductID: product.ID, URL: "https://example.com/webhook", Secret: "test-secret",
+		Events: []string{"license.renewed"}, Active: true,
+	}
+	if err := s.CreateWebhook(ctx, webhook); err != nil {
+		t.Fatalf("create renewal webhook: %v", err)
+	}
+
+	validFrom := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	validUntil := time.Date(2026, time.January, 31, 0, 0, 0, 0, time.UTC)
+	lic := &model.License{
+		ProductID: product.ID, PlanID: monthly.ID, Email: "early@example.com",
+		LicenseKey: "EARLY-" + suffix, Status: model.StatusActive,
+		ValidFrom: validFrom, ValidUntil: &validUntil,
+	}
+	if err := s.CreateLicenseWithSubscription(ctx, lic, monthly); err != nil {
+		t.Fatalf("create early renewal license: %v", err)
+	}
+
+	renewed, err := s.RenewManualSubscription(ctx, lic.ID, "admin-test", time.Date(2026, time.January, 20, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("early renewal: %v", err)
+	}
+	wantMonthlyEnd := time.Date(2026, time.February, 28, 0, 0, 0, 0, time.UTC)
+	if !renewed.CurrentPeriodEnd.Equal(wantMonthlyEnd) {
+		t.Fatalf("early renewal end = %s, want %s", renewed.CurrentPeriodEnd, wantMonthlyEnd)
+	}
+	if !renewed.CurrentPeriodStart.Equal(validFrom) {
+		t.Fatalf("early renewal changed period start: %s", renewed.CurrentPeriodStart)
+	}
+
+	if err := s.ChangeLicensePlan(ctx, lic.ID, yearly.ID); err != nil {
+		t.Fatalf("change plan: %v", err)
+	}
+	changed, err := s.FindLicenseByID(ctx, lic.ID)
+	if err != nil {
+		t.Fatalf("find changed license: %v", err)
+	}
+	if changed.PlanID != yearly.ID || changed.ValidUntil == nil || !changed.ValidUntil.Equal(wantMonthlyEnd) {
+		t.Fatalf("plan change did not preserve paid-through date: plan=%s until=%v", changed.PlanID, changed.ValidUntil)
+	}
+	sub, err := s.FindSubscriptionByLicense(ctx, lic.ID)
+	if err != nil {
+		t.Fatalf("find changed subscription: %v", err)
+	}
+	if sub.PlanID != yearly.ID {
+		t.Fatalf("subscription plan = %s, want %s", sub.PlanID, yearly.ID)
+	}
+
+	renewed, err = s.RenewManualSubscription(ctx, lic.ID, "admin-test", time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("yearly renewal after plan change: %v", err)
+	}
+	wantYearlyEnd := time.Date(2027, time.February, 28, 0, 0, 0, 0, time.UTC)
+	if !renewed.CurrentPeriodEnd.Equal(wantYearlyEnd) {
+		t.Fatalf("yearly renewal end = %s, want %s", renewed.CurrentPeriodEnd, wantYearlyEnd)
+	}
+
+	lateUntil := time.Date(2024, time.January, 1, 0, 0, 0, 0, time.UTC)
+	late := &model.License{
+		ProductID: product.ID, PlanID: monthly.ID, Email: "late@example.com",
+		LicenseKey: "LATE-" + suffix, Status: model.StatusExpired,
+		ValidFrom: validFrom, ValidUntil: &lateUntil,
+	}
+	if err := s.CreateLicenseWithSubscription(ctx, late, monthly); err != nil {
+		t.Fatalf("create late renewal license: %v", err)
+	}
+	lateResult, err := s.RenewManualSubscription(ctx, late.ID, "admin-test", time.Date(2024, time.January, 31, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("late renewal: %v", err)
+	}
+	wantLeapEnd := time.Date(2024, time.February, 29, 0, 0, 0, 0, time.UTC)
+	if !lateResult.CurrentPeriodEnd.Equal(wantLeapEnd) || lateResult.License.Status != model.StatusActive {
+		t.Fatalf("late renewal = (%s, %s), want (%s, active)", lateResult.CurrentPeriodEnd, lateResult.License.Status, wantLeapEnd)
+	}
+
+	suspended := &model.License{
+		ProductID: product.ID, PlanID: monthly.ID, Email: "blocked@example.com",
+		LicenseKey: "BLOCKED-" + suffix, Status: model.StatusSuspended,
+		ValidFrom: validFrom, ValidUntil: &validUntil,
+	}
+	if err := s.CreateLicenseWithSubscription(ctx, suspended, monthly); err != nil {
+		t.Fatalf("create suspended license: %v", err)
+	}
+	if _, err := s.RenewManualSubscription(ctx, suspended.ID, "admin-test", time.Now()); !errors.Is(err, store.ErrManualRenewalBlocked) {
+		t.Fatalf("suspended renewal error = %v, want ErrManualRenewalBlocked", err)
+	}
+
+	stripe := &model.License{
+		ProductID: product.ID, PlanID: monthly.ID, Email: "stripe@example.com",
+		LicenseKey: "STRIPE-" + suffix, Status: model.StatusActive,
+		PaymentProvider: "stripe", StripeSubscriptionID: "sub_" + suffix,
+		ValidFrom: validFrom, ValidUntil: &validUntil,
+	}
+	if err := s.CreateLicenseWithSubscription(ctx, stripe, monthly); err != nil {
+		t.Fatalf("create Stripe license: %v", err)
+	}
+	if _, err := s.RenewManualSubscription(ctx, stripe.ID, "admin-test", time.Now()); !errors.Is(err, store.ErrManualRenewalNotSubscription) {
+		t.Fatalf("Stripe renewal error = %v, want ErrManualRenewalNotSubscription", err)
+	}
+
+	audits, err := s.DB.NewSelect().Model((*model.AuditLog)(nil)).
+		Where("entity_id = ? AND action = 'renewed'", lic.ID).Count(ctx)
+	if err != nil {
+		t.Fatalf("count renewal audits: %v", err)
+	}
+	if audits != 2 {
+		t.Fatalf("renewal audit count = %d, want 2", audits)
+	}
+	deliveries, err := s.DB.NewSelect().Model((*model.WebhookDelivery)(nil)).
+		Where("webhook_id = ? AND event = 'license.renewed'", webhook.ID).Count(ctx)
+	if err != nil {
+		t.Fatalf("count renewal webhook deliveries: %v", err)
+	}
+	if deliveries != 3 {
+		t.Fatalf("renewal webhook delivery count = %d, want 3", deliveries)
+	}
+}
+
+func TestSubscriptionPeriodMigrationBackfillsLegacyRows(t *testing.T) {
+	s := setupTestDB(t)
+	defer s.Close()
+	ctx := context.Background()
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin migration test transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.NewRaw("ALTER TABLE plans DROP CONSTRAINT IF EXISTS plans_license_type_billing_interval_check").Exec(ctx); err != nil {
+		t.Fatalf("drop current billing constraint: %v", err)
+	}
+	suffix := time.Now().Format("150405.000000")
+	product := &model.Product{ID: "product-legacy-" + suffix, Name: "Legacy Product", Slug: "legacy-product-" + suffix, Type: "desktop"}
+	if _, err := tx.NewInsert().Model(product).Exec(ctx); err != nil {
+		t.Fatalf("insert legacy product: %v", err)
+	}
+	plan := &model.Plan{
+		ID: "plan-legacy-" + suffix, ProductID: product.ID, Name: "Legacy Subscription", Slug: "legacy",
+		CheckoutID:  "lg" + strings.ReplaceAll(suffix, ".", ""),
+		LicenseType: "subscription", BillingInterval: "", LicenseModel: "standard", GraceDays: 7,
+	}
+	if _, err := tx.NewInsert().Model(plan).Exec(ctx); err != nil {
+		t.Fatalf("insert legacy plan: %v", err)
+	}
+	validFrom := time.Date(2024, time.January, 31, 12, 0, 0, 0, time.UTC)
+	lic := &model.License{
+		ID: "license-legacy-" + suffix, ProductID: product.ID, PlanID: plan.ID,
+		Email: "legacy@example.com", LicenseKey: "LEGACY-" + suffix,
+		Status: model.StatusActive, ValidFrom: validFrom,
+	}
+	if _, err := tx.NewInsert().Model(lic).Exec(ctx); err != nil {
+		t.Fatalf("insert legacy license: %v", err)
+	}
+	sub := &model.Subscription{
+		ID: "subscription-legacy-" + suffix, LicenseID: lic.ID, PlanID: plan.ID, Status: model.StatusActive,
+	}
+	if _, err := tx.NewInsert().Model(sub).Exec(ctx); err != nil {
+		t.Fatalf("insert legacy subscription: %v", err)
+	}
+
+	migrationSQL, err := os.ReadFile("../../db/migrations/20260811_subscription_periods.up.sql")
+	if err != nil {
+		t.Fatalf("read subscription migration: %v", err)
+	}
+	if _, err := tx.NewRaw(string(migrationSQL)).Exec(ctx); err != nil {
+		t.Fatalf("execute subscription migration: %v", err)
+	}
+	if err := tx.NewSelect().Model(plan).WherePK().Scan(ctx); err != nil {
+		t.Fatalf("reload migrated plan: %v", err)
+	}
+	if plan.BillingInterval != "month" {
+		t.Fatalf("legacy billing interval = %q, want month", plan.BillingInterval)
+	}
+	if err := tx.NewSelect().Model(lic).WherePK().Scan(ctx); err != nil {
+		t.Fatalf("reload migrated license: %v", err)
+	}
+	wantEnd := time.Date(2024, time.February, 29, 12, 0, 0, 0, time.UTC)
+	if lic.ValidUntil == nil || !lic.ValidUntil.Equal(wantEnd) || lic.Status != model.StatusExpired {
+		t.Fatalf("migrated license = until %v status %s, want %s expired", lic.ValidUntil, lic.Status, wantEnd)
+	}
+	if err := tx.NewSelect().Model(sub).WherePK().Scan(ctx); err != nil {
+		t.Fatalf("reload migrated subscription: %v", err)
+	}
+	if sub.CurrentPeriodStart == nil || !sub.CurrentPeriodStart.Equal(validFrom) ||
+		sub.CurrentPeriodEnd == nil || !sub.CurrentPeriodEnd.Equal(wantEnd) || sub.Status != model.StatusExpired {
+		t.Fatalf("migrated subscription period/status mismatch: %#v", sub)
+	}
+}
+
 func TestFloatingCheckOutWithLimit_Atomic(t *testing.T) {
 	s := setupTestDB(t)
 	defer s.Close()
@@ -271,6 +489,7 @@ func TestFloatingCheckOutWithLimit_Atomic(t *testing.T) {
 		Name:            "Float Plan",
 		Slug:            "float",
 		LicenseType:     "subscription",
+		BillingInterval: "month",
 		MaxActivations:  3,
 		LicenseModel:    "floating",
 		FloatingTimeout: 30,
@@ -394,7 +613,7 @@ func TestUpdateLicenseAndSubscription_Atomic(t *testing.T) {
 	product := &model.Product{Name: "Sync Test", Slug: "sync-" + time.Now().Format("150405.000000"), Type: "saas"}
 	_ = s.CreateProduct(ctx, product)
 
-	plan := &model.Plan{ProductID: product.ID, Name: "Basic", Slug: "basic", LicenseType: "subscription", LicenseModel: "standard"}
+	plan := &model.Plan{ProductID: product.ID, Name: "Basic", Slug: "basic", LicenseType: "subscription", BillingInterval: "month", LicenseModel: "standard"}
 	_ = s.CreatePlan(ctx, plan)
 
 	lic := &model.License{

@@ -5,8 +5,8 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   try {
     res = await fetch(BASE + path, {
       credentials: "include",
-      headers: { "Content-Type": "application/json", ...opts?.headers },
       ...opts,
+      headers: { "Content-Type": "application/json", ...opts?.headers },
     })
   } catch (e) {
     // Network-level failure (server down, DNS, CORS). fetch() throws
@@ -207,6 +207,11 @@ export const admin = {
   suspendLicense: (id: string) => post(`/admin/licenses/${id}/suspend`),
   reinstateLicense: (id: string) => post(`/admin/licenses/${id}/reinstate`),
   refundLicense: (id: string) => post(`/admin/licenses/${id}/refund`),
+  renewLicense: (id: string) =>
+    request<ManualRenewalResult>(`/admin/licenses/${id}/renew`, {
+      method: "POST",
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+    }),
 
   deleteActivation: (id: string) => del(`/admin/activations/${id}`),
 
@@ -527,6 +532,7 @@ export interface License {
   email: string
   license_key: string
   payment_provider?: string
+  stripe_subscription_id?: string
   status: string
   valid_from: string
   valid_until?: string
@@ -543,6 +549,15 @@ export interface License {
   activations?: Activation[]
   seats?: Seat[]
   addons?: LicenseAddon[]
+}
+
+export interface ManualRenewalResult {
+  license_id: string
+  status: string
+  old_valid_until?: string
+  valid_until: string
+  current_period_start: string
+  current_period_end: string
 }
 
 export interface Activation {

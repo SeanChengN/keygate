@@ -120,6 +120,19 @@ const en = {
   "plans.allProducts": "All products",
 
   // Licenses
+  "licenses.subscriptionIssueHint":
+    "The commercial expiry is calculated {period}; a {days}-day commercial grace period follows.",
+  "licenses.licenseType": "License Type",
+  "licenses.billingInterval": "Subscription Period",
+  "licenses.commercialValidUntil": "Commercial Expiry",
+  "licenses.graceEndsAt": "Commercial Grace Ends",
+  "licenses.perpetualLicense": "Perpetual License",
+  "licenses.notApplicable": "Not applicable",
+  "licenses.renewOnePeriod": "Renew One Period",
+  "licenses.confirmRenew": "Confirm Renewal",
+  "licenses.renewConfirm":
+    "Renew {plan} for one {period} period. Early renewal extends the current expiry ({date}); an overdue renewal starts today.",
+  "licenses.renewed": "License renewed successfully.",
   "licenses.title": "Licenses",
   "licenses.subtitle": "Manage software licenses.",
   "licenses.issue": "Issue License",

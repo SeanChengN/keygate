@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stripe/stripe-go/v82/subscription"
 
+	"github.com/tabloy/keygate/internal/billing"
 	"github.com/tabloy/keygate/internal/license"
 	"github.com/tabloy/keygate/internal/model"
 	"github.com/tabloy/keygate/internal/service"
@@ -261,6 +262,10 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 		response.BadRequest(c, "license_type must be subscription, perpetual, or trial")
 		return
 	}
+	if err := validateBillingInterval(req.LicenseType, req.BillingInterval); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
 
 	if err := validatePlanNumericBounds(planBounds{
 		MaxActivations:  req.MaxActivations,
@@ -418,6 +423,18 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 			response.BadRequest(c, "license_type must be subscription, perpetual, or trial")
 			return
 		}
+	}
+	effectiveLicenseType := p.LicenseType
+	if req.LicenseType != nil {
+		effectiveLicenseType = *req.LicenseType
+	}
+	effectiveBillingInterval := p.BillingInterval
+	if req.BillingInterval != nil {
+		effectiveBillingInterval = *req.BillingInterval
+	}
+	if err := validateBillingInterval(effectiveLicenseType, effectiveBillingInterval); err != nil {
+		response.BadRequest(c, err.Error())
+		return
 	}
 
 	// Numeric-range validation. Pull from the request when the
@@ -732,6 +749,19 @@ func validatePlanNumericBounds(b planBounds) error {
 	return nil
 }
 
+func validateBillingInterval(licenseType, interval string) error {
+	if licenseType == "subscription" {
+		if interval != "month" && interval != "year" {
+			return fmt.Errorf("subscription billing_interval must be month or year")
+		}
+		return nil
+	}
+	if interval != "" {
+		return fmt.Errorf("billing_interval must be empty for perpetual and trial plans")
+	}
+	return nil
+}
+
 // validateScopes rejects unknown scope strings. Keeping the check at
 // the boundary catches typos that would otherwise produce a silently
 // powerless key.
@@ -895,20 +925,30 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 		status = model.StatusTrialing
 	}
 
+	now := time.Now()
 	l := &model.License{
 		ProductID:           req.ProductID,
 		PlanID:              req.PlanID,
 		Email:               req.Email,
 		LicenseKey:          license.GenerateKey(""),
 		Status:              status,
+		ValidFrom:           now,
 		Notes:               req.Notes,
 		ExternalCustomerID:  req.ExternalCustomerID,
 		ExternalWorkspaceID: req.ExternalWorkspaceID,
 	}
 
-	// Set valid_until for trial licenses
+	if plan.LicenseType == "subscription" {
+		until, periodErr := billing.AddPeriod(now, plan.BillingInterval)
+		if periodErr != nil {
+			response.BadRequest(c, periodErr.Error())
+			return
+		}
+		l.ValidUntil = &until
+	}
+	// Set valid_until for trial licenses.
 	if plan.LicenseType == "trial" && plan.TrialDays > 0 {
-		until := time.Now().Add(time.Duration(plan.TrialDays) * 24 * time.Hour)
+		until := now.Add(time.Duration(plan.TrialDays) * 24 * time.Hour)
 		l.ValidUntil = &until
 	}
 
@@ -1042,6 +1082,42 @@ func (h *AdminHandler) SuspendLicense(c *gin.Context) {
 		}
 	}
 	response.OK(c, gin.H{"status": "suspended"})
+}
+
+func (h *AdminHandler) RenewLicense(c *gin.Context) {
+	id := c.Param("id")
+	if strings.TrimSpace(c.GetHeader("Idempotency-Key")) == "" {
+		response.Err(c, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key is required")
+		return
+	}
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
+	result, err := h.Store.RenewManualSubscription(c, id, adminID(c), time.Now())
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrManualRenewalNotSubscription):
+			response.Err(c, http.StatusConflict, "MANUAL_RENEWAL_NOT_ALLOWED", err.Error())
+		case errors.Is(err, store.ErrManualRenewalBlocked):
+			response.Err(c, http.StatusConflict, "LICENSE_REINSTATE_REQUIRED", err.Error())
+		default:
+			response.Internal(c)
+		}
+		return
+	}
+	if h.Webhook != nil {
+		for _, queued := range result.QueuedWebhooks {
+			h.Webhook.DeliverQueued(queued.Webhook, queued.Delivery)
+		}
+	}
+	response.OK(c, gin.H{
+		"license_id":           id,
+		"status":               model.StatusActive,
+		"old_valid_until":      result.PreviousValidUntil,
+		"valid_until":          result.CurrentPeriodEnd,
+		"current_period_start": result.CurrentPeriodStart,
+		"current_period_end":   result.CurrentPeriodEnd,
+	})
 }
 
 func (h *AdminHandler) ReinstateLicense(c *gin.Context) {
@@ -1599,7 +1675,7 @@ func (h *AdminHandler) ChangeLicensePlan(c *gin.Context) {
 
 	oldPlanID := l.PlanID
 	l.PlanID = req.PlanID
-	if err := h.Store.UpdateLicense(c, l, "plan_id"); err != nil {
+	if err := h.Store.ChangeLicensePlan(c, l.ID, req.PlanID); err != nil {
 		response.Internal(c)
 		return
 	}

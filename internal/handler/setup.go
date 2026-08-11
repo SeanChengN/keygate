@@ -173,7 +173,7 @@ func (h *SetupHandler) Initialize(c *gin.Context) {
 		maxActivations, maxSeats = 3, 10
 	}
 	if _, err := tx.NewRaw(
-		"INSERT INTO plans (id, product_id, name, slug, license_type, max_activations, max_seats, grace_days, active, created_at) VALUES (?, ?, 'Pro', 'pro', 'subscription', ?, ?, 7, true, now())",
+		"INSERT INTO plans (id, product_id, name, slug, license_type, billing_interval, max_activations, max_seats, grace_days, active, created_at) VALUES (?, ?, 'Pro', 'pro', 'subscription', 'month', ?, ?, 7, true, now())",
 		planID, productID, maxActivations, maxSeats,
 	).Exec(ctx); err != nil {
 		response.Internal(c)
@@ -203,7 +203,7 @@ func (h *SetupHandler) Initialize(c *gin.Context) {
 	// Build response objects
 	user := &model.User{ID: actualUserID, Email: req.AdminEmail, Name: req.AdminName, Role: model.RoleOwner}
 	product := &model.Product{ID: productID, Name: req.ProductName, Slug: req.ProductSlug, Type: req.ProductType}
-	plan := &model.Plan{ID: planID, ProductID: productID, Name: "Pro", Slug: "pro", LicenseType: "subscription"}
+	plan := &model.Plan{ID: planID, ProductID: productID, Name: "Pro", Slug: "pro", LicenseType: "subscription", BillingInterval: "month"}
 
 	response.Created(c, gin.H{
 		"user":    user,

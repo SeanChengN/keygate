@@ -337,6 +337,9 @@ function PlanDialog({
   // pre-filled it before the product was selected).
   const handleSubmit = () => {
     const payload: Partial<Plan> & Record<string, unknown> = { ...form }
+    if (form.license_type !== "subscription") {
+      payload.billing_interval = ""
+    }
     if (!supports.activations) {
       payload.max_activations = 0
       payload.license_model = "standard"
@@ -403,7 +406,19 @@ function PlanDialog({
             </div>
             <div className="space-y-2">
               <Label>{t("plans.licenseType")}</Label>
-              <Select value={form.license_type} onValueChange={(v) => set("license_type", v)}>
+              <Select
+                value={form.license_type}
+                onValueChange={(v) =>
+                  setForm((current) => ({
+                    ...current,
+                    license_type: v,
+                    billing_interval:
+                      v === "subscription"
+                        ? current.billing_interval === "year" ? "year" : "month"
+                        : "",
+                  }))
+                }
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -414,22 +429,20 @@ function PlanDialog({
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <Label>{t("plans.billingInterval")}</Label>
-              <Select
-                value={form.billing_interval || "none"}
-                onValueChange={(v) => set("billing_interval", v === "none" ? "" : v)}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">{t("plans.none")}</SelectItem>
-                  <SelectItem value="month">{t("plans.monthly")}</SelectItem>
-                  <SelectItem value="year">{t("plans.yearly")}</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {form.license_type === "subscription" && (
+              <div className="space-y-2">
+                <Label>{t("plans.billingInterval")}</Label>
+                <Select value={form.billing_interval || "month"} onValueChange={(v) => set("billing_interval", v)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="month">{t("plans.monthly")}</SelectItem>
+                    <SelectItem value="year">{t("plans.yearly")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             {supports.activations && (
               <div className="space-y-2">
                 <Label>{t("plans.maxActivations")}</Label>

@@ -18,17 +18,22 @@ func testKey(t *testing.T) ed25519.PrivateKey {
 func TestSignAndVerify(t *testing.T) {
 	priv := testKey(t)
 	pub := PublicKey(priv)
+	validUntil := int64(1702592000)
 
 	token := &VerifyToken{
-		LicenseID:  "lic-123",
-		ProductID:  "prod-456",
-		PlanID:     "plan-789",
-		Status:     "active",
-		Identifier: "device-abc",
-		Features:   map[string]any{"export": true},
-		IssuedAt:   1700000000,
-		ExpiresAt:  9999999999, // far future
-		GraceDays:  7,
+		Version:     2,
+		LicenseID:   "lic-123",
+		ProductID:   "prod-456",
+		PlanID:      "plan-789",
+		PlanName:    "WMS 月卡",
+		LicenseType: "subscription",
+		ValidUntil:  &validUntil,
+		Status:      "active",
+		Identifier:  "device-abc",
+		Features:    map[string]any{"export": true},
+		IssuedAt:    1700000000,
+		ExpiresAt:   9999999999, // far future
+		GraceDays:   7,
 	}
 
 	signed, err := Sign(token, priv)
@@ -48,6 +53,12 @@ func TestSignAndVerify(t *testing.T) {
 	}
 	if parsed.Status != "active" {
 		t.Errorf("Status mismatch: %s", parsed.Status)
+	}
+	if parsed.Version != 2 || parsed.PlanName != "WMS 月卡" || parsed.LicenseType != "subscription" {
+		t.Fatalf("signed commercial identity mismatch: %+v", parsed)
+	}
+	if parsed.ValidUntil == nil || *parsed.ValidUntil != validUntil {
+		t.Fatalf("signed commercial expiry mismatch: %v", parsed.ValidUntil)
 	}
 	if parsed.Features["export"] != true {
 		t.Error("Feature export should be true")

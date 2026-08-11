@@ -277,6 +277,7 @@ function CreateLicenseDialog({
     enabled: !!productId,
   })
   const plans = plansData?.plans || []
+  const selectedPlan = plans.find((plan) => plan.id === planId)
 
   // Show a hint right under the product dropdown so admin knows what
   // they're committing to — saas licenses don't get device activation,
@@ -347,10 +348,21 @@ function CreateLicenseDialog({
                 {plans.map((p) => (
                   <SelectItem key={p.id} value={p.id}>
                     {p.name}
+                    {p.license_type === "subscription" && p.billing_interval
+                      ? ` · ${t(`plans.${p.billing_interval === "year" ? "yearly" : "monthly"}`)}`
+                      : ""}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
+            {selectedPlan?.license_type === "subscription" && (
+              <p className="text-xs text-muted-foreground">
+                {t("licenses.subscriptionIssueHint", {
+                  period: t(`plans.${selectedPlan.billing_interval === "year" ? "yearly" : "monthly"}`),
+                  days: selectedPlan.grace_days,
+                })}
+              </p>
+            )}
           </div>
           <div className="space-y-2">
             <Label>{t("common.email")}</Label>
@@ -429,6 +441,14 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
       qc.invalidateQueries({ queryKey: ["admin"] })
     },
   })
+  const renewMut = useMutation({
+    mutationFn: () => admin.renewLicense(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin"] })
+      showToast(t("licenses.renewed"), "success")
+    },
+    onError: (error: Error) => showToast(error.message, "error"),
+  })
   // Activation deletion is destructive — wrap in a confirmation
   // state so a stray ghost-click on the trash icon (icons sit
   // close together in the row) doesn't immediately revoke a device.
@@ -492,13 +512,35 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                     <p className="mt-1 font-medium">{lic.plan?.name || "-"}</p>
                   </div>
                   <div>
+                    <p className="text-muted-foreground">{t("licenses.licenseType")}</p>
+                    <p className="mt-1">
+                      {lic.plan?.license_type ? t(`plans.${lic.plan.license_type}` as any) : "-"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">{t("licenses.billingInterval")}</p>
+                    <p className="mt-1">
+                      {lic.plan?.license_type === "subscription"
+                        ? t(`plans.${lic.plan.billing_interval === "year" ? "yearly" : "monthly"}`)
+                        : t("licenses.notApplicable")}
+                    </p>
+                  </div>
+                  <div>
                     <p className="text-muted-foreground">{t("licenses.validFrom")}</p>
                     <p className="mt-1">{formatDate(lic.valid_from)}</p>
                   </div>
                   <div>
-                    <p className="text-muted-foreground">{t("licenses.validUntil")}</p>
-                    <p className="mt-1">{formatDate(lic.valid_until)}</p>
+                    <p className="text-muted-foreground">{t("licenses.commercialValidUntil")}</p>
+                    <p className="mt-1">
+                      {lic.plan?.license_type === "perpetual" ? t("licenses.perpetualLicense") : formatDate(lic.valid_until)}
+                    </p>
                   </div>
+                  {lic.plan?.license_type === "subscription" && (
+                    <div>
+                      <p className="text-muted-foreground">{t("licenses.graceEndsAt")}</p>
+                      <p className="mt-1">{formatGraceEnd(lic.valid_until, lic.plan.grace_days)}</p>
+                    </div>
+                  )}
                   {lic.payment_provider && (
                     <div>
                       <p className="text-muted-foreground">{t("licenses.payment")}</p>
@@ -537,6 +579,36 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
 
                 {/* Actions */}
                 <div className="flex gap-2 flex-wrap">
+                  {lic.plan?.license_type === "subscription" &&
+                    !lic.payment_provider &&
+                    !lic.stripe_subscription_id &&
+                    ["active", "past_due", "expired", "canceled"].includes(lic.status) && (
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button size="sm" disabled={renewMut.isPending}>
+                            <RefreshCw className="h-4 w-4 mr-1" /> {t("licenses.renewOnePeriod")}
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>{t("licenses.renewOnePeriod")}</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              {t("licenses.renewConfirm", {
+                                plan: lic.plan.name,
+                                period: t(`plans.${lic.plan.billing_interval === "year" ? "yearly" : "monthly"}`),
+                                date: formatDate(lic.valid_until),
+                              })}
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <div className="flex justify-end gap-2 mt-4">
+                            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+                            <AlertDialogAction onClick={() => renewMut.mutate()}>
+                              {t("licenses.confirmRenew")}
+                            </AlertDialogAction>
+                          </div>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    )}
                   {(lic.status === "active" || lic.status === "trialing") && (
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
@@ -745,6 +817,13 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
       </DialogContent>
     </Dialog>
   )
+}
+
+function formatGraceEnd(validUntil: string | undefined, graceDays: number): string {
+  if (!validUntil) return "-"
+  const end = new Date(validUntil)
+  end.setUTCDate(end.getUTCDate() + graceDays)
+  return formatDate(end)
 }
 
 function UsageTab({ licenseId }: { licenseId: string }) {

@@ -43,7 +43,7 @@ func TestNotifyPaymentRecovered_EpisodeScopedDedup(t *testing.T) {
 	}
 	plan := &model.Plan{
 		ProductID: prod.ID, Name: "Pro", Slug: "pro-" + suffix,
-		LicenseType: "subscription", GraceDays: 7,
+		LicenseType: "subscription", BillingInterval: "month", GraceDays: 7,
 		LicenseModel: "standard",
 	}
 	if err := s.CreatePlan(ctx, plan); err != nil {
@@ -128,7 +128,7 @@ func TestNotifyPaymentRecovered_LegacyZeroEpisode(t *testing.T) {
 	_ = s.CreateProduct(ctx, prod)
 	plan := &model.Plan{
 		ProductID: prod.ID, Name: "Pro", Slug: "pro-" + suffix,
-		LicenseType: "subscription", GraceDays: 7,
+		LicenseType: "subscription", BillingInterval: "month", GraceDays: 7,
 		LicenseModel: "standard",
 	}
 	_ = s.CreatePlan(ctx, plan)

@@ -1,11 +1,50 @@
 package service
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"testing"
 	"time"
 
+	licensepkg "github.com/tabloy/keygate/internal/license"
 	"github.com/tabloy/keygate/internal/model"
 )
+
+func TestSignTokenAtSeparatesCommercialExpiryFromLease(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+	svc := &LicenseService{signingKey: privateKey}
+	now := time.Date(2026, time.August, 11, 8, 0, 0, 0, time.UTC)
+	commercialEnd := time.Date(2026, time.September, 11, 8, 0, 0, 0, time.UTC)
+	lic := &model.License{
+		ID: "lic-1", ProductID: "product-1", PlanID: "plan-1", Status: model.StatusActive,
+		ValidUntil: &commercialEnd,
+		Plan:       &model.Plan{Name: "WMS 月卡", LicenseType: "subscription", BillingInterval: "month", GraceDays: 7},
+	}
+
+	signed, err := svc.signTokenAt(lic, "device-1", now)
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+	parsed, err := licensepkg.Verify(signed, privateKey.Public().(ed25519.PublicKey))
+	if err != nil {
+		t.Fatalf("verify token: %v", err)
+	}
+	if parsed.Version != 2 || parsed.PlanName != "WMS 月卡" || parsed.LicenseType != "subscription" {
+		t.Fatalf("commercial identity fields mismatch: %+v", parsed)
+	}
+	if parsed.ValidUntil == nil || *parsed.ValidUntil != commercialEnd.Unix() {
+		t.Fatalf("commercial expiry = %v, want %d", parsed.ValidUntil, commercialEnd.Unix())
+	}
+	if parsed.ExpiresAt != now.Add(7*24*time.Hour).Unix() {
+		t.Fatalf("lease expiry = %d, want %d", parsed.ExpiresAt, now.Add(7*24*time.Hour).Unix())
+	}
+	if parsed.GraceDays != 7 {
+		t.Fatalf("commercial grace = %d, want 7", parsed.GraceDays)
+	}
+}
 
 func TestAssertUsable(t *testing.T) {
 	svc := &LicenseService{}

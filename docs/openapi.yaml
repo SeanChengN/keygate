@@ -23,7 +23,7 @@ info:
     ## Idempotency
 
     Write endpoints (`/license/activate`, `/license/usage`,
-    `/license/floating/checkout`) honor the `Idempotency-Key` header. A
+    `/license/floating/checkout`, `/admin/licenses/:id/renew`) honor the `Idempotency-Key` header. A
     retry with the same key + same body replays the cached response
     (200/4xx) within 24 hours. Same key + different body → 422
     `IDEMPOTENCY_KEY_CONFLICT`. Concurrent retries while the original
@@ -68,7 +68,7 @@ servers:
         description: Your Keygate server URL
 
 # Public SDK endpoints have no auth at the route layer. Admin endpoints
-# (out of this doc) use BearerAuth or session cookies.
+# use BearerAuth or session cookies.
 security: []
 
 tags:
@@ -84,6 +84,8 @@ tags:
     description: Concurrent session checkout for floating licenses
   - name: Releases
     description: License-gated download + auto-update feeds (Sparkle / Velopack / Tauri)
+  - name: Admin
+    description: Administrative license operations
 
 paths:
   /license/pubkey:
@@ -769,6 +771,52 @@ paths:
         "404":
           description: Unknown product_slug
 
+  /admin/licenses/{id}/renew:
+    post:
+      tags: [Admin]
+      summary: Renew a manual subscription for one plan period
+      description: |
+        Renews a manually-issued monthly or yearly subscription. Early
+        renewal extends the existing commercial expiry; overdue renewal
+        starts from the current server date. Stripe-backed licenses and
+        suspended or revoked licenses are rejected.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            maxLength: 256
+          description: A unique operation key; retries replay the original result.
+      responses:
+        "200":
+          description: Subscription renewed for exactly one plan period
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      license_id: { type: string }
+                      status: { type: string, enum: [active] }
+                      old_valid_until: { type: string, format: date-time, nullable: true }
+                      valid_until: { type: string, format: date-time }
+                      current_period_start: { type: string, format: date-time }
+                      current_period_end: { type: string, format: date-time }
+        "400":
+          description: Missing Idempotency-Key
+        "409":
+          description: Not a manual subscription, or license must be reinstated first
+
 components:
   parameters:
     ProductSlug:
@@ -848,6 +896,9 @@ components:
                 Ed25519-signed offline verification token. Format:
                 `<base64url-payload>.<base64url-signature>`. Verify
                 using the server's public key from /license/pubkey.
+                Protocol version 2 signs `ver`, license type `lty`, plan
+                name `pnm`, commercial expiry `vld`, the fixed online
+                lease expiry `exp`, and commercial grace days `grc`.
 
     VerifyResponse:
       type: object
@@ -865,10 +916,19 @@ components:
               type: string
             plan_name:
               type: string
+            license_type:
+              type: string
+              enum: [subscription, perpetual, trial]
+            billing_interval:
+              type: string
+              enum: [month, year]
             valid_until:
               type: string
               format: date-time
               nullable: true
+            lease_expires_at:
+              type: string
+              format: date-time
             features:
               type: object
               description: "Key-value map of feature entitlements"

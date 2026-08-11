@@ -43,6 +43,19 @@ func (s *WebhookService) Dispatch(ctx context.Context, productID, event string, 
 	}
 }
 
+// DeliverQueued sends a delivery row that another database transaction has
+// already committed. It never creates a second delivery record.
+func (s *WebhookService) DeliverQueued(webhook *model.Webhook, delivery *model.WebhookDelivery) {
+	if webhook == nil || delivery == nil {
+		return
+	}
+	go func() {
+		s.sem <- struct{}{}
+		defer func() { <-s.sem }()
+		s.deliver(webhook, delivery)
+	}()
+}
+
 // DispatchWithLog dispatches webhook events and returns any error that occurs during setup.
 // Use this when the caller needs to handle or log dispatch failures explicitly.
 func (s *WebhookService) DispatchWithLog(ctx context.Context, productID, event string, data map[string]any) error {

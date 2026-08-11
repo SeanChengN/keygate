@@ -189,14 +189,17 @@ type VerifyInput struct {
 }
 
 type VerifyResult struct {
-	Status     string         `json:"status"`
-	PlanID     string         `json:"plan_id"`
-	PlanName   string         `json:"plan_name"`
-	ValidUntil *time.Time     `json:"valid_until,omitempty"`
-	Features   map[string]any `json:"features"`
-	Token      string         `json:"token"`
-	GraceDays  int            `json:"grace_days"`
-	Meta       map[string]any `json:"meta"`
+	Status          string         `json:"status"`
+	PlanID          string         `json:"plan_id"`
+	PlanName        string         `json:"plan_name"`
+	LicenseType     string         `json:"license_type"`
+	BillingInterval string         `json:"billing_interval,omitempty"`
+	ValidUntil      *time.Time     `json:"valid_until,omitempty"`
+	LeaseExpiresAt  time.Time      `json:"lease_expires_at"`
+	Features        map[string]any `json:"features"`
+	Token           string         `json:"token"`
+	GraceDays       int            `json:"grace_days"`
+	Meta            map[string]any `json:"meta"`
 	// External identifiers echoed back so the SDK can confirm the
 	// license belongs to the workspace it expects. Empty when the
 	// license was created without them. Optional in the JSON envelope
@@ -267,22 +270,39 @@ func (s *LicenseService) Verify(ctx context.Context, in VerifyInput) (*VerifyRes
 	}
 
 	planName := ""
+	licenseType := ""
+	billingInterval := ""
 	if lic.Plan != nil {
 		planName = lic.Plan.Name
+		licenseType = lic.Plan.LicenseType
+		billingInterval = lic.Plan.BillingInterval
 	}
 
 	middleware.LicenseVerifications.WithLabelValues(lic.ProductID, "valid").Inc()
 
-	token, err := s.signToken(lic, in.Identifier)
+	// Signed token timestamps use Unix seconds. Return the same precision in
+	// the verification envelope so clients can compare the signed and unsigned
+	// representations without false mismatches from database microseconds.
+	issuedAt := time.Now().UTC().Truncate(time.Second)
+	token, err := s.signTokenAt(lic, in.Identifier, issuedAt)
 	if err != nil {
 		return nil, apperr.Internal(err)
+	}
+
+	var validUntil *time.Time
+	if lic.ValidUntil != nil {
+		normalized := time.Unix(lic.ValidUntil.Unix(), 0).UTC()
+		validUntil = &normalized
 	}
 
 	return &VerifyResult{
 		Status:              lic.Status,
 		PlanID:              lic.PlanID,
 		PlanName:            planName,
-		ValidUntil:          lic.ValidUntil,
+		LicenseType:         licenseType,
+		BillingInterval:     billingInterval,
+		ValidUntil:          validUntil,
+		LeaseExpiresAt:      issuedAt.Add(7 * 24 * time.Hour),
 		Features:            s.entitlements(lic),
 		Token:               token,
 		GraceDays:           s.graceDays(lic),
@@ -445,6 +465,9 @@ func requireProductCapability(prod *model.Product, capability, hint string) erro
 // avoid existence oracle).
 func (s *LicenseService) assertUsable(lic *model.License) error {
 	now := time.Now()
+	if lic.Plan != nil && lic.Plan.LicenseType == "subscription" && lic.ValidUntil == nil {
+		return apperr.New(403, "LICENSE_PERIOD_MISSING", "subscription period is not configured")
+	}
 	switch lic.Status {
 	case model.StatusActive, model.StatusTrialing, model.StatusPastDue:
 		if lic.ValidUntil != nil && now.After(*lic.ValidUntil) {
@@ -505,11 +528,23 @@ func responseMeta() map[string]any {
 }
 
 func (s *LicenseService) signToken(lic *model.License, identifier string) (string, error) {
-	now := time.Now()
+	return s.signTokenAt(lic, identifier, time.Now())
+}
+
+func (s *LicenseService) signTokenAt(lic *model.License, identifier string, now time.Time) (string, error) {
+	planName := ""
+	licenseType := ""
+	if lic.Plan != nil {
+		planName = lic.Plan.Name
+		licenseType = lic.Plan.LicenseType
+	}
 	t := &license.VerifyToken{
+		Version:     2,
 		LicenseID:   lic.ID,
 		ProductID:   lic.ProductID,
 		PlanID:      lic.PlanID,
+		PlanName:    planName,
+		LicenseType: licenseType,
 		Status:      lic.Status,
 		Identifier:  identifier,
 		Features:    s.entitlements(lic),
@@ -517,6 +552,10 @@ func (s *LicenseService) signToken(lic *model.License, identifier string) (strin
 		ExpiresAt:   now.Add(7 * 24 * time.Hour).Unix(),
 		GraceDays:   s.graceDays(lic),
 		Fingerprint: license.Fingerprint(identifier, lic.ProductID),
+	}
+	if lic.ValidUntil != nil && licenseType != "perpetual" {
+		validUntil := lic.ValidUntil.Unix()
+		t.ValidUntil = &validUntil
 	}
 	return license.Sign(t, s.signingKey)
 }

@@ -524,6 +524,11 @@ func (s *Store) CreateLicenseWithSubscription(ctx context.Context, l *model.Lice
 			PlanID:    plan.ID,
 			Status:    l.Status,
 		}
+		if plan.LicenseType == "subscription" {
+			start := l.ValidFrom
+			sub.CurrentPeriodStart = &start
+			sub.CurrentPeriodEnd = l.ValidUntil
+		}
 		if plan.LicenseType == "trial" && plan.TrialDays > 0 {
 			now := time.Now()
 			sub.TrialStart = &now
