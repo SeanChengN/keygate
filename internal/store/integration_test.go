@@ -438,6 +438,14 @@ func TestSubscriptionPeriodMigrationBackfillsLegacyRows(t *testing.T) {
 	if _, err := tx.NewInsert().Model(lic).Exec(ctx); err != nil {
 		t.Fatalf("insert legacy license: %v", err)
 	}
+	missingSubLicense := &model.License{
+		ID: "license-missing-sub-" + suffix, ProductID: product.ID, PlanID: plan.ID,
+		Email: "missing-sub@example.com", LicenseKey: "MISSING-SUB-" + suffix,
+		Status: model.StatusActive, ValidFrom: validFrom.Add(time.Hour),
+	}
+	if _, err := tx.NewInsert().Model(missingSubLicense).Exec(ctx); err != nil {
+		t.Fatalf("insert legacy license without subscription: %v", err)
+	}
 	sub := &model.Subscription{
 		ID: "subscription-legacy-" + suffix, LicenseID: lic.ID, PlanID: plan.ID, Status: model.StatusActive,
 	}
@@ -451,6 +459,15 @@ func TestSubscriptionPeriodMigrationBackfillsLegacyRows(t *testing.T) {
 	}
 	if _, err := tx.NewRaw(string(migrationSQL)).Exec(ctx); err != nil {
 		t.Fatalf("execute subscription migration: %v", err)
+	}
+	recordsSQL, err := os.ReadFile("../../db/migrations/20260811_subscription_records.up.sql")
+	if err != nil {
+		t.Fatalf("read subscription records migration: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := tx.NewRaw(string(recordsSQL)).Exec(ctx); err != nil {
+			t.Fatalf("execute subscription records migration pass %d: %v", i+1, err)
+		}
 	}
 	if err := tx.NewSelect().Model(plan).WherePK().Scan(ctx); err != nil {
 		t.Fatalf("reload migrated plan: %v", err)
@@ -471,6 +488,25 @@ func TestSubscriptionPeriodMigrationBackfillsLegacyRows(t *testing.T) {
 	if sub.CurrentPeriodStart == nil || !sub.CurrentPeriodStart.Equal(validFrom) ||
 		sub.CurrentPeriodEnd == nil || !sub.CurrentPeriodEnd.Equal(wantEnd) || sub.Status != model.StatusExpired {
 		t.Fatalf("migrated subscription period/status mismatch: %#v", sub)
+	}
+	backfilled := new(model.Subscription)
+	if err := tx.NewSelect().Model(backfilled).
+		Where("subscription.license_id = ?", missingSubLicense.ID).Scan(ctx); err != nil {
+		t.Fatalf("load backfilled subscription: %v", err)
+	}
+	wantMissingEnd := wantEnd.Add(time.Hour)
+	if backfilled.CurrentPeriodStart == nil || !backfilled.CurrentPeriodStart.Equal(missingSubLicense.ValidFrom) ||
+		backfilled.CurrentPeriodEnd == nil || !backfilled.CurrentPeriodEnd.Equal(wantMissingEnd) ||
+		backfilled.Status != model.StatusExpired || backfilled.PlanID != plan.ID {
+		t.Fatalf("backfilled missing subscription mismatch: %#v", backfilled)
+	}
+	count, err := tx.NewSelect().Model((*model.Subscription)(nil)).
+		Where("license_id = ?", missingSubLicense.ID).Count(ctx)
+	if err != nil {
+		t.Fatalf("count backfilled subscriptions: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("backfilled subscription count = %d, want 1", count)
 	}
 }
 
