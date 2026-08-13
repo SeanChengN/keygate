@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Copy, Package, Pencil, Plus, Trash2 } from "lucide-react"
 import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
+import { EntityId } from "@/components/entity-id"
 import { showToast } from "@/components/toast"
 import {
   AlertDialog,
@@ -161,12 +162,15 @@ export default function PlansPage() {
                     const supportsSeats = prodType === "saas" || prodType === "hybrid"
                     return (
                       <DataTableRow key={p.id}>
-                        <DataTableCell className="font-medium">{p.name}</DataTableCell>
+                        <DataTableCell>
+                          <div className="font-medium">{p.name}</div>
+                          <EntityId label={t("plans.id")} value={p.id} />
+                        </DataTableCell>
                         <DataTableCell className="text-muted-foreground">
                           {products.find((pr) => pr.id === p.product_id)?.name || p.product_id}
                         </DataTableCell>
                         <DataTableCell>
-                          <Badge variant="secondary">{p.license_type}</Badge>
+                          <Badge variant="secondary">{t(`plans.${p.license_type}` as "plans.subscription")}</Badge>
                         </DataTableCell>
                         <DataTableCell>
                           {supportsActivations ? (
@@ -377,7 +381,11 @@ function PlanDialog({
                   {products.map((p) => (
                     <SelectItem key={p.id} value={p.id}>
                       {p.name}
-                      {p.type ? <span className="ml-2 text-xs text-muted-foreground">[{p.type}]</span> : null}
+                      {p.type ? (
+                        <span className="ml-2 text-xs text-muted-foreground">
+                          [{t(`products.${p.type}` as "products.desktop")}]
+                        </span>
+                      ) : null}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -413,9 +421,7 @@ function PlanDialog({
                     ...current,
                     license_type: v,
                     billing_interval:
-                      v === "subscription"
-                        ? current.billing_interval === "year" ? "year" : "month"
-                        : "",
+                      v === "subscription" ? (current.billing_interval === "year" ? "year" : "month") : "",
                   }))
                 }
               >
@@ -661,7 +667,7 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
               <Input
                 value={newEnt.feature}
                 onChange={(e) => setNewEnt((n) => ({ ...n, feature: e.target.value }))}
-                placeholder="e.g. api_calls"
+                placeholder={t("plans.featurePlaceholder")}
               />
             </div>
             <div className="space-y-2">
@@ -683,7 +689,7 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
               <Input
                 value={newEnt.value}
                 onChange={(e) => setNewEnt((n) => ({ ...n, value: e.target.value }))}
-                placeholder="e.g. true, 100"
+                placeholder={t("plans.valuePlaceholder")}
               />
             </div>
             {newEnt.value_type === "quota" && (
@@ -695,7 +701,7 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
                     onValueChange={(v) => setNewEnt((n) => ({ ...n, quota_period: v }))}
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="Select period" />
+                      <SelectValue placeholder={t("plans.selectPeriod")} />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="hourly">{t("plans.hourly")}</SelectItem>
@@ -710,7 +716,7 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
                   <Input
                     value={newEnt.quota_unit}
                     onChange={(e) => setNewEnt((n) => ({ ...n, quota_unit: e.target.value }))}
-                    placeholder="e.g. requests, tokens"
+                    placeholder={t("plans.quotaUnitPlaceholder")}
                   />
                 </div>
                 {/* Optional Stripe Billing Meter binding. When non-empty,
@@ -723,7 +729,7 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
                   <Input
                     value={newEnt.stripe_meter_event_name}
                     onChange={(e) => setNewEnt((n) => ({ ...n, stripe_meter_event_name: e.target.value }))}
-                    placeholder="api_calls (configured in Stripe dashboard)"
+                    placeholder={t("plans.meterEventPlaceholder")}
                   />
                   <p className="text-[10px] text-muted-foreground">{t("plans.stripeMeterEventNameHelp")}</p>
                 </div>

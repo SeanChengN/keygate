@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Cloud, Laptop, Layers, Pencil, Plus, Search, Trash2 } from "lucide-react"
 import { useState } from "react"
+import { EntityId } from "@/components/entity-id"
 import { showToast } from "@/components/toast"
 import {
   AlertDialog,
@@ -118,12 +119,21 @@ export default function ProductsPage() {
                   {paginatedItems.length === 0 && <DataTableEmpty colSpan={5} message={t("products.empty")} />}
                   {paginatedItems.map((p) => (
                     <DataTableRow key={p.id}>
-                      <DataTableCell className="font-medium">{p.name}</DataTableCell>
+                      <DataTableCell>
+                        <div className="font-medium">{p.name}</div>
+                        <EntityId label={t("products.id")} value={p.id} />
+                      </DataTableCell>
                       <DataTableCell>
                         <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{p.slug}</code>
                       </DataTableCell>
                       <DataTableCell>
-                        <Badge variant="secondary">{p.type}</Badge>
+                        <Badge variant="secondary">
+                          {p.type === "desktop"
+                            ? t("products.desktop")
+                            : p.type === "saas"
+                              ? t("products.saas")
+                              : t("products.hybrid")}
+                        </Badge>
                       </DataTableCell>
                       <DataTableCell className="text-muted-foreground text-xs">
                         {formatDate(p.created_at)}

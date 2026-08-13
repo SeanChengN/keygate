@@ -105,7 +105,9 @@ export function AdminLayout() {
         <div className="p-4 flex items-center gap-2.5">
           <img src={logo_url || "/logo.svg"} alt={site_name} className="h-7 w-7" />
           <span className="font-bold text-lg tracking-tight">{site_name}</span>
-          <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded font-medium ml-auto">Admin</span>
+          <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded font-medium ml-auto">
+            {t("nav.adminBadge")}
+          </span>
         </div>
         <Separator />
         <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto">

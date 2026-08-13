@@ -423,19 +423,25 @@ func (h *ReleaseAdminHandler) Update(c *gin.Context) {
 	response.OK(c, updated)
 }
 
-// DELETE /api/v1/admin/releases/:id (draft only; cascades artifacts).
+// DELETE /api/v1/admin/releases/:id (draft or yanked; cascades artifacts).
 func (h *ReleaseAdminHandler) Delete(c *gin.Context) {
 	id := c.Param("id")
 	if !h.checkReleaseScope(c, id) {
 		return
 	}
-	if err := h.svc.DeleteDraft(c.Request.Context(), id); err != nil {
+	deleted, err := h.svc.DeleteRelease(c.Request.Context(), id)
+	if err != nil {
 		writeAppErr(c, err)
 		return
 	}
 	h.store.Audit(c.Request.Context(), &model.AuditLog{
 		Entity: "release", EntityID: id, Action: "deleted",
 		ActorType: "admin", ActorID: adminID(c), IPAddress: c.ClientIP(),
+		Changes: map[string]any{
+			"product_id": deleted.ProductID,
+			"version":    deleted.Version,
+			"status":     deleted.Status,
+		},
 	})
 	response.OK(c, gin.H{"status": "deleted"})
 }

@@ -636,26 +636,26 @@ func (s *ReleaseService) Unyank(ctx context.Context, releaseID string) (*model.R
 	return rel, nil
 }
 
-// DeleteDraft removes a draft release + all its artifacts (CASCADE) +
-// cleans up storage objects best-effort.
-func (s *ReleaseService) DeleteDraft(ctx context.Context, releaseID string) error {
-	fileKeys, err := s.store.DeleteRelease(ctx, releaseID)
+// DeleteRelease removes a draft or yanked release + all artifacts (CASCADE) +
+// cleans up storage objects best-effort. Published releases must be yanked first.
+func (s *ReleaseService) DeleteRelease(ctx context.Context, releaseID string) (*model.Release, error) {
+	deleted, fileKeys, err := s.store.DeleteRelease(ctx, releaseID)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrReleaseNotFound):
-			return apperr.New(404, "RELEASE_NOT_FOUND", "release not found")
+			return nil, apperr.New(404, "RELEASE_NOT_FOUND", "release not found")
 		case errors.Is(err, store.ErrReleaseNotDeletable):
-			return apperr.New(409, "NOT_DELETABLE", "only draft releases can be hard-deleted; yank instead")
+			return nil, apperr.New(409, "NOT_DELETABLE", "published releases must be yanked before deletion")
 		default:
-			return apperr.Internal(err)
+			return nil, apperr.Internal(err)
 		}
 	}
 	for _, key := range fileKeys {
 		if err := s.storage.Delete(ctx, key); err != nil {
-			s.logger.Warn("draft delete: storage cleanup failed", "release_id", releaseID, "file_key", key, "err", err)
+			s.logger.Warn("release delete: storage cleanup failed", "release_id", releaseID, "file_key", key, "err", err)
 		}
 	}
-	return nil
+	return deleted, nil
 }
 
 // ─── Download ───

@@ -16,9 +16,8 @@ var (
 	ErrReleaseAlreadyExists  = errors.New("release with same product/version already exists")
 	ErrReleaseNotPublishable = errors.New("release is not in a publishable state")
 	ErrReleaseNotYankable    = errors.New("release is not in a yankable state")
-	// ErrReleaseNotDeletable: only DRAFT releases can be hard-deleted.
-	// Published / yanked stay in the DB so audit trail is preserved.
-	ErrReleaseNotDeletable = errors.New("only draft releases can be deleted")
+	// ErrReleaseNotDeletable: a published release must be yanked before deletion.
+	ErrReleaseNotDeletable = errors.New("only draft or yanked releases can be deleted")
 
 	// Atomic-publish preconditions surfaced by PublishRelease when its
 	// inline gate rejects the transition. The gate evaluates them in a
@@ -317,27 +316,26 @@ func (s *Store) UpdateReleaseNotes(ctx context.Context, id, name, notes string) 
 	return nil
 }
 
-// DeleteRelease removes a draft release and CASCADE-removes its artifacts.
-// Returns the file_keys of all artifacts so the caller can clean up storage.
-// Only DRAFT releases are deletable; published / yanked must stay.
-func (s *Store) DeleteRelease(ctx context.Context, id string) (fileKeys []string, err error) {
+// DeleteRelease removes a draft or yanked release and CASCADE-removes its artifacts.
+// It returns the locked pre-delete row for audit plus artifact keys for storage cleanup.
+func (s *Store) DeleteRelease(ctx context.Context, id string) (deleted *model.Release, fileKeys []string, err error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	var status string
+	var release model.Release
 	if err := tx.NewRaw(
-		`SELECT status FROM releases WHERE id = ? FOR UPDATE`, id,
-	).Scan(ctx, &status); err != nil {
+		`SELECT id, product_id, version, status FROM releases WHERE id = ? FOR UPDATE`, id,
+	).Scan(ctx, &release); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrReleaseNotFound
+			return nil, nil, ErrReleaseNotFound
 		}
-		return nil, err
+		return nil, nil, err
 	}
-	if status != model.ReleaseStatusDraft {
-		return nil, ErrReleaseNotDeletable
+	if release.Status != model.ReleaseStatusDraft && release.Status != model.ReleaseStatusYanked {
+		return nil, nil, ErrReleaseNotDeletable
 	}
 
 	// Collect file_keys before cascade delete drops the artifact rows.
@@ -345,17 +343,17 @@ func (s *Store) DeleteRelease(ctx context.Context, id string) (fileKeys []string
 	if err := tx.NewRaw(
 		`SELECT file_key FROM release_artifacts WHERE release_id = ? AND file_key <> ''`, id,
 	).Scan(ctx, &keys); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if _, err := tx.NewDelete().Model((*model.Release)(nil)).
-		Where("id = ? AND status = ?", id, model.ReleaseStatusDraft).Exec(ctx); err != nil {
-		return nil, err
+		Where("id = ? AND status IN (?, ?)", id, model.ReleaseStatusDraft, model.ReleaseStatusYanked).Exec(ctx); err != nil {
+		return nil, nil, err
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return keys, nil
+	return &release, keys, nil
 }
 
 // ListPublishedReleasesForFeed returns published, non-yanked releases for

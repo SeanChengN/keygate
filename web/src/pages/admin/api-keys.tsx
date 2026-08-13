@@ -403,7 +403,7 @@ function CreateAPIKeyDialog({
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. CI provisioning, Acme prod backend"
+              placeholder={t("apiKeys.namePlaceholder")}
               required
             />
           </div>
@@ -452,7 +452,7 @@ function NewKeyDialog({ keyValue, onClose }: { keyValue: string; onClose: () => 
             </Button>
           </div>
           <div className="flex justify-end">
-            <Button onClick={onClose}>Done</Button>
+            <Button onClick={onClose}>{t("common.done")}</Button>
           </div>
         </div>
       </DialogContent>

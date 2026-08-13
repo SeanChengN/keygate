@@ -231,7 +231,7 @@ function CustomerDetailDialog({
               {(detail.licenses || []).length === 0 ? (
                 <Card>
                   <CardContent className="py-8">
-                    <p className="text-sm text-muted-foreground text-center">No licenses found.</p>
+                    <p className="text-sm text-muted-foreground text-center">{t("customers.noLicenses")}</p>
                   </CardContent>
                 </Card>
               ) : (
@@ -277,7 +277,7 @@ function CustomerDetailDialog({
               {(detail.subscriptions || []).length === 0 ? (
                 <Card>
                   <CardContent className="py-8">
-                    <p className="text-sm text-muted-foreground text-center">No subscriptions found.</p>
+                    <p className="text-sm text-muted-foreground text-center">{t("customers.noSubscriptions")}</p>
                   </CardContent>
                 </Card>
               ) : (
@@ -334,7 +334,7 @@ function CustomerDetailDialog({
               {(detail.recent_audit_logs || []).length === 0 ? (
                 <Card>
                   <CardContent className="py-8">
-                    <p className="text-sm text-muted-foreground text-center">No recent activity.</p>
+                    <p className="text-sm text-muted-foreground text-center">{t("customers.noRecentActivity")}</p>
                   </CardContent>
                 </Card>
               ) : (

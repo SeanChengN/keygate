@@ -54,6 +54,35 @@ const TIMEZONES = [
   { value: "Pacific/Auckland", label: "UTC +12:00", city: "Auckland" },
 ]
 
+const TIMEZONE_CITY_ZH: Record<string, string> = {
+  UTC: "协调世界时",
+  "Pacific/Midway": "中途岛",
+  "Pacific/Honolulu": "檀香山",
+  "America/Anchorage": "安克雷奇",
+  "America/Los_Angeles": "洛杉矶",
+  "America/Denver": "丹佛",
+  "America/Chicago": "芝加哥",
+  "America/New_York": "纽约",
+  "America/Caracas": "加拉加斯",
+  "America/Sao_Paulo": "圣保罗",
+  "Atlantic/South_Georgia": "南乔治亚岛",
+  "Atlantic/Azores": "亚速尔群岛",
+  "Europe/London": "伦敦",
+  "Europe/Paris": "巴黎 / 柏林",
+  "Europe/Helsinki": "赫尔辛基 / 开罗",
+  "Europe/Moscow": "莫斯科",
+  "Asia/Dubai": "迪拜",
+  "Asia/Karachi": "卡拉奇",
+  "Asia/Kolkata": "加尔各答 / 孟买",
+  "Asia/Dhaka": "达卡",
+  "Asia/Bangkok": "曼谷",
+  "Asia/Shanghai": "上海 / 新加坡",
+  "Asia/Tokyo": "东京 / 首尔",
+  "Australia/Sydney": "悉尼",
+  "Pacific/Noumea": "努美阿",
+  "Pacific/Auckland": "奥克兰",
+}
+
 export default function SettingsPage() {
   const { t, locale, setLocale } = useI18n()
   const qc = useQueryClient()
@@ -170,7 +199,9 @@ export default function SettingsPage() {
                       {TIMEZONES.map((tz) => (
                         <SelectItem key={tz.value} value={tz.value}>
                           <span className="font-mono text-xs">{tz.label}</span>
-                          <span className="ml-2 text-muted-foreground">{tz.city}</span>
+                          <span className="ml-2 text-muted-foreground">
+                            {locale === "zh" ? TIMEZONE_CITY_ZH[tz.value] || tz.city : tz.city}
+                          </span>
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -216,7 +247,9 @@ export default function SettingsPage() {
                 <div className="space-y-2 col-span-2">
                   <Label>{t("settings.logoUrl")}</Label>
                   <div className="flex items-center gap-3">
-                    {form.logo_url && <img src={form.logo_url} alt="Custom logo" className="h-8 w-8 rounded border" />}
+                    {form.logo_url && (
+                      <img src={form.logo_url} alt={t("settings.customLogoAlt")} className="h-8 w-8 rounded border" />
+                    )}
                     <Input
                       value={form.logo_url || ""}
                       onChange={(e) => set("logo_url", e.target.value)}
@@ -535,7 +568,9 @@ function TeamManagement() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge variant={m.role === "owner" ? "default" : "secondary"}>{m.role}</Badge>
+                    <Badge variant={m.role === "owner" ? "default" : "secondary"}>
+                      {m.role === "owner" ? t("team.roleOwner") : t("team.roleAdmin")}
+                    </Badge>
                     {isOwner && m.id !== user?.id && (
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
@@ -582,8 +617,8 @@ function TeamManagement() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="admin">Admin</SelectItem>
-                    <SelectItem value="owner">Owner</SelectItem>
+                    <SelectItem value="admin">{t("team.roleAdmin")}</SelectItem>
+                    <SelectItem value="owner">{t("team.roleOwner")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

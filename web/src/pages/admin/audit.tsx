@@ -83,14 +83,14 @@ export default function AuditPage() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t("audit.allEntities")}</SelectItem>
-            <SelectItem value="license">License</SelectItem>
-            <SelectItem value="product">Product</SelectItem>
-            <SelectItem value="plan">Plan</SelectItem>
-            <SelectItem value="user">User</SelectItem>
-            <SelectItem value="api_key">API Key</SelectItem>
-            <SelectItem value="webhook">Webhook</SelectItem>
-            <SelectItem value="addon">Addon</SelectItem>
-            <SelectItem value="seat">Seat</SelectItem>
+            <SelectItem value="license">{t("audit.entityLicense")}</SelectItem>
+            <SelectItem value="product">{t("audit.entityProduct")}</SelectItem>
+            <SelectItem value="plan">{t("audit.entityPlan")}</SelectItem>
+            <SelectItem value="user">{t("audit.entityUser")}</SelectItem>
+            <SelectItem value="api_key">{t("audit.entityApiKey")}</SelectItem>
+            <SelectItem value="webhook">{t("audit.entityWebhook")}</SelectItem>
+            <SelectItem value="addon">{t("audit.entityAddon")}</SelectItem>
+            <SelectItem value="seat">{t("audit.entitySeat")}</SelectItem>
           </SelectContent>
         </Select>
         <Input

@@ -80,7 +80,7 @@ export default function LicensesPage() {
       <div className="space-y-6">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{t("licenses.title")}</h1>
-          <p className="text-muted-foreground">Manage software licenses.</p>
+          <p className="text-muted-foreground">{t("licenses.subtitle")}</p>
         </div>
         <Card>
           <CardContent className="py-12 text-center">
@@ -331,7 +331,11 @@ function CreateLicenseDialog({
                 {products.map((p) => (
                   <SelectItem key={p.id} value={p.id}>
                     {p.name}
-                    {p.type ? <span className="ml-2 text-xs text-muted-foreground">[{p.type}]</span> : null}
+                    {p.type ? (
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        [{t(`products.${p.type}` as "products.desktop")}]
+                      </span>
+                    ) : null}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -342,7 +346,7 @@ function CreateLicenseDialog({
             <Label>{t("common.plan")}</Label>
             <Select value={planId} onValueChange={setPlanId}>
               <SelectTrigger>
-                <SelectValue placeholder="Select a plan" />
+                <SelectValue placeholder={t("licenses.selectPlan")} />
               </SelectTrigger>
               <SelectContent>
                 {plans.map((p) => (
@@ -513,9 +517,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                   </div>
                   <div>
                     <p className="text-muted-foreground">{t("licenses.licenseType")}</p>
-                    <p className="mt-1">
-                      {lic.plan?.license_type ? t(`plans.${lic.plan.license_type}` as any) : "-"}
-                    </p>
+                    <p className="mt-1">{lic.plan?.license_type ? t(`plans.${lic.plan.license_type}` as any) : "-"}</p>
                   </div>
                   <div>
                     <p className="text-muted-foreground">{t("licenses.billingInterval")}</p>
@@ -532,7 +534,9 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                   <div>
                     <p className="text-muted-foreground">{t("licenses.commercialValidUntil")}</p>
                     <p className="mt-1">
-                      {lic.plan?.license_type === "perpetual" ? t("licenses.perpetualLicense") : formatDate(lic.valid_until)}
+                      {lic.plan?.license_type === "perpetual"
+                        ? t("licenses.perpetualLicense")
+                        : formatDate(lic.valid_until)}
                     </p>
                   </div>
                   {lic.plan?.license_type === "subscription" && (
@@ -1010,7 +1014,9 @@ function SeatsTab({ licenseId, maxSeats }: { licenseId: string; maxSeats: number
               <DataTableRow key={s.id}>
                 <DataTableCell className="font-medium">{s.email}</DataTableCell>
                 <DataTableCell>
-                  <Badge variant="secondary">{s.role}</Badge>
+                  <Badge variant="secondary">
+                    {s.role === "admin" ? t("licenses.roleAdmin") : t("licenses.roleMember")}
+                  </Badge>
                 </DataTableCell>
                 <DataTableCell>
                   {s.removed_at ? (
@@ -1078,7 +1084,7 @@ function ChangePlanDialog({
             <Label>{t("common.plan")}</Label>
             <Select value={planId} onValueChange={setPlanId}>
               <SelectTrigger>
-                <SelectValue placeholder="Select a plan" />
+                <SelectValue placeholder={t("licenses.selectPlan")} />
               </SelectTrigger>
               <SelectContent>
                 {plans.map((p) => (

@@ -17,15 +17,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { useI18n } from "@/i18n"
 import { admin } from "@/lib/api"
 
-const TEMPLATE_META: Record<string, { label: string; variables: string[] }> = {
-  license_created: { label: "License Created", variables: ["Product", "Plan", "LicenseKey"] },
-  license_expiring: { label: "License Expiring", variables: ["Product", "LicenseKey", "ExpiresAt"] },
-  license_expired: { label: "License Expired", variables: ["Product"] },
-  trial_expired: { label: "Trial Expired", variables: ["Product"] },
-  license_suspended: { label: "License Suspended", variables: ["Product", "Reason"] },
-  quota_warning: { label: "Quota Warning", variables: ["Product", "Feature", "Used", "Limit", "Pct"] },
-  seat_invite: { label: "Seat Invite", variables: ["Product", "Inviter"] },
-  payment_failed: { label: "Payment Failed", variables: ["Product"] },
+const TEMPLATE_META: Record<string, { labelKey: string; variables: string[] }> = {
+  license_created: { labelKey: "emailTemplates.licenseCreated", variables: ["Product", "Plan", "LicenseKey"] },
+  license_expiring: { labelKey: "emailTemplates.licenseExpiring", variables: ["Product", "LicenseKey", "ExpiresAt"] },
+  license_expired: { labelKey: "emailTemplates.licenseExpired", variables: ["Product"] },
+  trial_expired: { labelKey: "emailTemplates.trialExpired", variables: ["Product"] },
+  license_suspended: { labelKey: "emailTemplates.licenseSuspended", variables: ["Product", "Reason"] },
+  quota_warning: { labelKey: "emailTemplates.quotaWarning", variables: ["Product", "Feature", "Used", "Limit", "Pct"] },
+  seat_invite: { labelKey: "emailTemplates.seatInvite", variables: ["Product", "Inviter"] },
+  payment_failed: { labelKey: "emailTemplates.paymentFailed", variables: ["Product"] },
 }
 
 const PREVIEW_DATA: Record<string, string> = {
@@ -124,10 +124,10 @@ export default function EmailTemplatesManager() {
                     <div className="flex items-center gap-3">
                       <Code className="h-4 w-4 text-muted-foreground" />
                       <div>
-                        <span className="text-sm font-medium">{meta.label}</span>
+                        <span className="text-sm font-medium">{t(meta.labelKey as any)}</span>
                         {isCustomized && (
                           <Badge variant="secondary" className="ml-2 text-xs">
-                            customized
+                            {t("emailTemplates.customized")}
                           </Badge>
                         )}
                         <div className="text-xs text-muted-foreground mt-0.5">
@@ -180,7 +180,7 @@ export default function EmailTemplatesManager() {
         <DialogContent className="max-w-3xl max-h-[85vh]">
           <DialogHeader>
             <DialogTitle>
-              {t("settings.editTemplate")}: {editing && TEMPLATE_META[editing]?.label}
+              {t("settings.editTemplate")}: {editing && t(TEMPLATE_META[editing]?.labelKey as any)}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
@@ -213,12 +213,12 @@ export default function EmailTemplatesManager() {
         <DialogContent className="max-w-2xl max-h-[85vh]">
           <DialogHeader>
             <DialogTitle>
-              {t("settings.templatePreview")}: {previewing && TEMPLATE_META[previewing]?.label}
+              {t("settings.templatePreview")}: {previewing && t(TEMPLATE_META[previewing]?.labelKey as any)}
             </DialogTitle>
           </DialogHeader>
           {previewing && (
             <iframe
-              title="Email Preview"
+              title={t("emailTemplates.previewTitle")}
               sandbox=""
               srcDoc={getPreviewHtml(previewing)}
               className="w-full h-96 border rounded-lg bg-white"
@@ -232,7 +232,7 @@ export default function EmailTemplatesManager() {
           <AlertDialogHeader>
             <AlertDialogTitle>
               {t("settings.resetTemplateTitle", {
-                template: (confirmReset && TEMPLATE_META[confirmReset]?.label) || "",
+                template: (confirmReset && t(TEMPLATE_META[confirmReset]?.labelKey as any)) || "",
               })}
             </AlertDialogTitle>
             <AlertDialogDescription>{t("settings.resetTemplateDesc")}</AlertDialogDescription>
