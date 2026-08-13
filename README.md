@@ -121,6 +121,10 @@ Open **http://localhost:9000** — the setup wizard guides you from there.
 
 > 📖 Full docs, deployment guides, and SDK examples at **[keygate.app/docs](https://keygate.app/docs)**
 
+### WMS 自维护分支发布
+
+`SeanChengN/keygate` 分支的提交、检查、不可变标签和源码 Release 操作见 [docs/dw-release.md](docs/dw-release.md)。本仓库不直接构建 WMS 生产环境使用的容器镜像；标签推送完成后，镜像构建和服务器升级在 `digital-warehousing-control-plane` 仓库中执行。
+
 <br />
 
 ## Compared to Alternatives
