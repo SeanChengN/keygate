@@ -52,7 +52,18 @@ git show --no-patch --oneline $Tag
 git push origin $Tag
 ```
 
-`git show` 中的提交必须就是第二步记录的发布提交。推送标签后，本仓库的 `Release` 工作流只创建 GitHub 源码 Release，不构建生产容器镜像。
+`git show` 中的提交必须就是第二步记录的发布提交。最后一条 `git push origin $Tag` 会自动触发本仓库 `.github/workflows/release.yml` 中的 `Release` 工作流；该工作流调用 `softprops/action-gh-release` 自动创建同名 GitHub 源码 Release，不需要再到 GitHub 页面手工点击“Create a new release”。它不会构建生产容器镜像。
+
+可以在命令行查看并等待这次自动工作流：
+
+```powershell
+gh run list --workflow release.yml --limit 5
+$RunId = '<上一步显示的本次运行ID>'
+gh run watch $RunId --exit-status
+gh release view $Tag
+```
+
+如果工作流失败，先用 `gh run view $RunId --log-failed` 查看原因；修复仓库权限或临时运行问题后执行 `gh run rerun $RunId --failed`。不要为了重跑 Release 删除、移动或重新推送同名标签。control-plane 构建生产镜像只依赖远端标签存在且能解析到正确提交，不依赖 GitHub Release 页面；但仍建议确认自动 Release 工作流成功后再交接。
 
 如果标签仅在本地创建且指错提交，可在推送前执行 `git tag -d $Tag`，然后重新创建。标签一旦推送到远端，就不要移动、强制覆盖或复用；修复代码后创建下一个 `dw` 序号。
 
