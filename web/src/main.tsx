@@ -20,6 +20,7 @@ import PlansPage from "@/pages/admin/plans"
 import ProductsPage from "@/pages/admin/products"
 import ReleasesPage from "@/pages/admin/releases"
 import SettingsPage from "@/pages/admin/settings"
+import UsersPage from "@/pages/admin/users"
 import WebhooksPage from "@/pages/admin/webhooks"
 import CheckoutSuccessPage from "@/pages/checkout-success"
 import LoginPage from "@/pages/login"
@@ -66,6 +67,7 @@ createRoot(document.getElementById("root")!).render(
                       <Route path="analytics" element={<AnalyticsPage />} />
                       <Route path="audit" element={<AuditPage />} />
                       <Route path="customers" element={<CustomersPage />} />
+                      <Route path="users" element={<UsersPage />} />
                       <Route path="settings" element={<SettingsPage />} />
                     </Route>
 

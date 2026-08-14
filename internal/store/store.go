@@ -657,6 +657,8 @@ type LicenseListFilter struct {
 	ProductID           string
 	Status              string
 	Search              string
+	CustomerID          string
+	UnassignedCustomer  bool
 	ExternalCustomerID  string
 	ExternalWorkspaceID string
 	Offset              int
@@ -665,13 +667,18 @@ type LicenseListFilter struct {
 
 func (s *Store) ListLicenses(ctx context.Context, f LicenseListFilter) ([]*model.License, int, error) {
 	q := s.DB.NewSelect().Model((*model.License)(nil)).
-		Relation("Plan").Relation("Product").
+		Relation("Plan").Relation("Product").Relation("Customer").
 		OrderExpr("license.created_at DESC")
 	if f.ProductID != "" {
 		q = q.Where("license.product_id = ?", f.ProductID)
 	}
 	if f.Status != "" {
 		q = q.Where("license.status = ?", f.Status)
+	}
+	if f.CustomerID != "" {
+		q = q.Where("license.customer_id = ?", f.CustomerID)
+	} else if f.UnassignedCustomer {
+		q = q.Where("license.customer_id IS NULL")
 	}
 	if f.ExternalCustomerID != "" {
 		q = q.Where("license.external_customer_id = ?", f.ExternalCustomerID)

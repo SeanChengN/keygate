@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Ban, Check, Copy, Eye, Package, Pause, Play, Plus, RefreshCw, Search, Trash2 } from "lucide-react"
-import { useState } from "react"
-import { Link } from "react-router-dom"
+import { useEffect, useState } from "react"
+import { Link, useSearchParams } from "react-router-dom"
 import { showToast } from "@/components/toast"
 import {
   AlertDialog,
@@ -39,29 +39,39 @@ import { formatDate, statusColor } from "@/lib/utils"
 export default function LicensesPage() {
   const { t } = useI18n()
   const qc = useQueryClient()
+  const [searchParams] = useSearchParams()
+  const initialCustomerId = searchParams.get("customer_id") || ""
   const [productFilter, setProductFilter] = useState<string>("")
   const [statusFilter, setStatusFilter] = useState<string>("")
+  const [customerFilter, setCustomerFilter] = useState<string>("")
   const [search, setSearch] = useState("")
   const [page, setPage] = useState(0)
   const limit = 20
 
   const { data: productsData } = useQuery({ queryKey: ["admin", "products"], queryFn: () => admin.listProducts() })
+  const { data: customersData } = useQuery({
+    queryKey: ["admin", "customers", "license-filter"],
+    queryFn: () => admin.listCustomers({ status: "all", limit: 100 }),
+  })
   const { data, isLoading } = useQuery({
-    queryKey: ["admin", "licenses", productFilter, statusFilter, search, page],
+    queryKey: ["admin", "licenses", productFilter, statusFilter, customerFilter, search, page],
     queryFn: () =>
       admin.listLicenses({
         product_id: productFilter || undefined,
         status: statusFilter || undefined,
         search: search || undefined,
+        customer_id: customerFilter && customerFilter !== "unassigned" ? customerFilter : undefined,
+        unassigned_customer: customerFilter === "unassigned",
         offset: page * limit,
         limit,
       }),
   })
 
-  const [creating, setCreating] = useState(false)
+  const [creating, setCreating] = useState(!!initialCustomerId)
   const [viewing, setViewing] = useState<string | null>(null)
 
   const products = productsData?.products || []
+  const customerOptions = customersData?.customers || []
   const licenses = data?.licenses || []
   const total = data?.total || 0
   const totalPages = Math.ceil(total / limit)
@@ -145,6 +155,26 @@ export default function LicensesPage() {
           </SelectContent>
         </Select>
         <Select
+          value={customerFilter}
+          onValueChange={(value) => {
+            setCustomerFilter(value === "all" ? "" : value)
+            setPage(0)
+          }}
+        >
+          <SelectTrigger className="w-52">
+            <SelectValue placeholder={t("customers.allCustomers")} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">{t("customers.allCustomers")}</SelectItem>
+            <SelectItem value="unassigned">{t("customers.unassigned")}</SelectItem>
+            {customerOptions.map((customer) => (
+              <SelectItem key={customer.id} value={customer.id}>
+                {customer.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
           value={statusFilter}
           onValueChange={(v) => {
             setStatusFilter(v === "all" ? "" : v)
@@ -175,6 +205,7 @@ export default function LicensesPage() {
                 <DataTableHeader>
                   <DataTableRow>
                     <DataTableHead>{t("common.email")}</DataTableHead>
+                    <DataTableHead>{t("customers.customer")}</DataTableHead>
                     <DataTableHead>{t("licenses.licenseKey")}</DataTableHead>
                     <DataTableHead>{t("common.product")}</DataTableHead>
                     <DataTableHead>{t("common.plan")}</DataTableHead>
@@ -185,10 +216,13 @@ export default function LicensesPage() {
                   </DataTableRow>
                 </DataTableHeader>
                 <DataTableBody>
-                  {licenses.length === 0 && <DataTableEmpty colSpan={8} message={t("licenses.empty")} />}
+                  {licenses.length === 0 && <DataTableEmpty colSpan={9} message={t("licenses.empty")} />}
                   {licenses.map((lic) => (
                     <DataTableRow key={lic.id}>
                       <DataTableCell className="font-medium">{lic.email}</DataTableCell>
+                      <DataTableCell className="text-muted-foreground">
+                        {lic.customer?.name || t("customers.unassigned")}
+                      </DataTableCell>
                       <DataTableCell>
                         <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{lic.license_key}</code>
                       </DataTableCell>
@@ -234,6 +268,7 @@ export default function LicensesPage() {
           products={products}
           onSubmit={(d) => createMut.mutate(d)}
           loading={createMut.isPending}
+          initialCustomerId={initialCustomerId}
         />
       )}
 
@@ -249,6 +284,7 @@ function CreateLicenseDialog({
   products,
   onSubmit,
   loading,
+  initialCustomerId,
 }: {
   open: boolean
   onClose: () => void
@@ -257,11 +293,13 @@ function CreateLicenseDialog({
     product_id: string
     plan_id: string
     email: string
+    customer_id: string
     notes?: string
     external_customer_id?: string
     external_workspace_id?: string
   }) => void
   loading: boolean
+  initialCustomerId?: string
 }) {
   const { t } = useI18n()
   const [productId, setProductId] = useState(products[0]?.id || "")
@@ -270,6 +308,33 @@ function CreateLicenseDialog({
   const [planId, setPlanId] = useState("")
   const [externalCustomerID, setExternalCustomerID] = useState("")
   const [externalWorkspaceID, setExternalWorkspaceID] = useState("")
+  const [customerId, setCustomerId] = useState(initialCustomerId || "")
+  const [addingCustomer, setAddingCustomer] = useState(false)
+  const [newCustomerName, setNewCustomerName] = useState("")
+  const [newCustomerEmail, setNewCustomerEmail] = useState("")
+  const qc = useQueryClient()
+
+  const { data: customersData } = useQuery({
+    queryKey: ["admin", "customers", "license-picker"],
+    queryFn: () => admin.listCustomers({ status: "active", limit: 100 }),
+  })
+  const customers = customersData?.customers || []
+  useEffect(() => {
+    if (!email && customerId) {
+      const customer = customers.find((item) => item.id === customerId)
+      if (customer) setEmail(customer.primary_email)
+    }
+  }, [customerId, customers, email])
+  const createCustomerMut = useMutation({
+    mutationFn: () =>
+      admin.createCustomer({ kind: "individual", name: newCustomerName, primary_email: newCustomerEmail }),
+    onSuccess: (customer) => {
+      qc.invalidateQueries({ queryKey: ["admin", "customers"] })
+      setCustomerId(customer.id)
+      setEmail(customer.primary_email)
+      setAddingCustomer(false)
+    },
+  })
 
   const { data: plansData } = useQuery({
     queryKey: ["admin", "plans", productId],
@@ -308,6 +373,7 @@ function CreateLicenseDialog({
               product_id: productId,
               plan_id: planId,
               email,
+              customer_id: customerId,
               notes,
               external_customer_id: externalCustomerID.trim() || undefined,
               external_workspace_id: externalWorkspaceID.trim() || undefined,
@@ -315,6 +381,56 @@ function CreateLicenseDialog({
           }}
           className="space-y-4"
         >
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label>{t("customers.customer")}</Label>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setAddingCustomer((value) => !value)}>
+                {addingCustomer ? t("common.cancel") : t("customers.quickNew")}
+              </Button>
+            </div>
+            {addingCustomer ? (
+              <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
+                <Input
+                  placeholder={t("customers.name")}
+                  value={newCustomerName}
+                  onChange={(e) => setNewCustomerName(e.target.value)}
+                />
+                <Input
+                  type="email"
+                  placeholder={t("common.email")}
+                  value={newCustomerEmail}
+                  onChange={(e) => setNewCustomerEmail(e.target.value)}
+                />
+                <Button
+                  type="button"
+                  disabled={!newCustomerName || !newCustomerEmail || createCustomerMut.isPending}
+                  onClick={() => createCustomerMut.mutate()}
+                >
+                  {t("common.add")}
+                </Button>
+              </div>
+            ) : (
+              <Select
+                value={customerId}
+                onValueChange={(id) => {
+                  setCustomerId(id)
+                  const customer = customers.find((item) => item.id === id)
+                  if (customer) setEmail(customer.primary_email)
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={t("customers.selectCustomer")} />
+                </SelectTrigger>
+                <SelectContent>
+                  {customers.map((customer) => (
+                    <SelectItem key={customer.id} value={customer.id}>
+                      {customer.name} · {customer.primary_email}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
           <div className="space-y-2">
             <Label>{t("common.product")}</Label>
             <Select
@@ -404,7 +520,7 @@ function CreateLicenseDialog({
             <Button type="button" variant="outline" onClick={onClose}>
               {t("common.cancel")}
             </Button>
-            <Button type="submit" disabled={loading || !planId}>
+            <Button type="submit" disabled={loading || !planId || !customerId}>
               {loading ? t("common.loading") : t("licenses.issue")}
             </Button>
           </div>
@@ -420,6 +536,18 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const { data: lic, isLoading } = useQuery({ queryKey: ["admin", "license", id], queryFn: () => admin.getLicense(id) })
   const [copied, setCopied] = useState(false)
   const [changingPlan, setChangingPlan] = useState(false)
+  const { data: customersData } = useQuery({
+    queryKey: ["admin", "customers", "license-detail"],
+    queryFn: () => admin.listCustomers({ status: "active", limit: 100 }),
+  })
+  const customerMut = useMutation({
+    mutationFn: (customerId: string) => admin.setLicenseCustomer(id, customerId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "license", id] })
+      qc.invalidateQueries({ queryKey: ["admin", "licenses"] })
+      qc.invalidateQueries({ queryKey: ["admin", "customer"] })
+    },
+  })
 
   const revokeMut = useMutation({
     mutationFn: () => admin.revokeLicense(id),
@@ -514,6 +642,26 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                   <div>
                     <p className="text-muted-foreground">{t("common.plan")}</p>
                     <p className="mt-1 font-medium">{lic.plan?.name || "-"}</p>
+                  </div>
+                  <div className="col-span-2">
+                    <p className="text-muted-foreground">{t("customers.customer")}</p>
+                    <Select
+                      value={lic.customer_id || "unassigned"}
+                      onValueChange={(value) => customerMut.mutate(value === "unassigned" ? "" : value)}
+                    >
+                      <SelectTrigger className="mt-1 max-w-md">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="unassigned">{t("customers.unassigned")}</SelectItem>
+                        {(customersData?.customers || []).map((customer) => (
+                          <SelectItem key={customer.id} value={customer.id}>
+                            {customer.name} · {customer.primary_email}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="mt-1 text-xs text-muted-foreground">{t("customers.licenseEmailIndependent")}</p>
                   </div>
                   <div>
                     <p className="text-muted-foreground">{t("licenses.licenseType")}</p>

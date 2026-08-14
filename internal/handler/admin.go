@@ -845,6 +845,8 @@ func (h *AdminHandler) ListLicenses(c *gin.Context) {
 		Search:              c.Query("search"),
 		ExternalCustomerID:  c.Query("external_customer_id"),
 		ExternalWorkspaceID: c.Query("external_workspace_id"),
+		CustomerID:          c.Query("customer_id"),
+		UnassignedCustomer:  c.Query("unassigned_customer") == "true",
 		Offset:              queryInt(c, "offset", 0),
 		Limit:               queryInt(c, "limit", 50),
 	})
@@ -873,6 +875,7 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 		ProductID           string `json:"product_id" binding:"required"`
 		PlanID              string `json:"plan_id" binding:"required"`
 		Email               string `json:"email" binding:"required"`
+		CustomerID          string `json:"customer_id"`
 		Notes               string `json:"notes"`
 		ExternalCustomerID  string `json:"external_customer_id"`
 		ExternalWorkspaceID string `json:"external_workspace_id"`
@@ -919,6 +922,17 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 	if !requireKeyProductScope(c, req.ProductID) {
 		return
 	}
+	if req.CustomerID != "" {
+		customer, err := h.Store.FindCustomerByID(c, req.CustomerID)
+		if err != nil {
+			response.NotFound(c, "customer not found")
+			return
+		}
+		if customer.ArchivedAt != nil {
+			response.Err(c, http.StatusConflict, "CUSTOMER_ARCHIVED", "archived customers cannot receive new licenses")
+			return
+		}
+	}
 
 	status := model.StatusActive
 	if plan.LicenseType == "trial" {
@@ -929,6 +943,7 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 	l := &model.License{
 		ProductID:           req.ProductID,
 		PlanID:              req.PlanID,
+		CustomerID:          req.CustomerID,
 		Email:               req.Email,
 		LicenseKey:          license.GenerateKey(""),
 		Status:              status,
@@ -1176,12 +1191,54 @@ func (h *AdminHandler) ListAuditLogs(c *gin.Context) {
 // ─── Users ───
 
 func (h *AdminHandler) ListUsers(c *gin.Context) {
-	users, total, err := h.Store.ListUsers(c, c.Query("search"), queryInt(c, "offset", 0), queryInt(c, "limit", 50))
+	role := c.Query("role")
+	if role != "" && role != model.RoleOwner && role != model.RoleAdmin && role != model.RoleUser {
+		response.BadRequest(c, "role must be owner, admin, or user")
+		return
+	}
+	users, total, err := h.Store.ListUsers(c, c.Query("search"), role, queryInt(c, "offset", 0), queryInt(c, "limit", 50))
 	if err != nil {
 		response.Internal(c)
 		return
 	}
 	response.OK(c, gin.H{"users": users, "total": total})
+}
+
+func (h *AdminHandler) SetLicenseCustomer(c *gin.Context) {
+	id := c.Param("id")
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
+	license, err := h.Store.FindLicenseByID(c, id)
+	if err != nil {
+		response.NotFound(c, "license not found")
+		return
+	}
+	var req struct {
+		CustomerID string `json:"customer_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid customer_id")
+		return
+	}
+	newID := strings.TrimSpace(req.CustomerID)
+	if newID != "" {
+		customer, err := h.Store.FindCustomerByID(c, newID)
+		if err != nil {
+			response.NotFound(c, "customer not found")
+			return
+		}
+		if customer.ArchivedAt != nil {
+			response.Err(c, http.StatusConflict, "CUSTOMER_ARCHIVED", "archived customers cannot receive licenses")
+			return
+		}
+	}
+	if err := h.Store.SetLicenseCustomer(c, id, newID); err != nil {
+		response.Internal(c)
+		return
+	}
+	h.Store.Audit(c, &model.AuditLog{Entity: "license", EntityID: id, Action: "customer_changed", ActorType: "admin", ActorID: adminID(c), Changes: map[string]any{"previous_customer_id": license.CustomerID, "customer_id": newID}})
+	response.OK(c, gin.H{"customer_id": newID})
 }
 
 // ─── Helpers ───

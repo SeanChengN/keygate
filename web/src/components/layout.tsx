@@ -14,6 +14,7 @@ import {
   ScrollText,
   Settings,
   User,
+  UserRoundCog,
   Users,
 } from "lucide-react"
 import { Link, Navigate, Outlet, useLocation } from "react-router-dom"
@@ -56,6 +57,7 @@ export function AdminLayout() {
       items: [
         { to: "/admin/licenses", label: t("nav.licenses"), icon: Key },
         { to: "/admin/customers", label: t("nav.customers"), icon: Users },
+        { to: "/admin/users", label: t("nav.users"), icon: UserRoundCog },
       ],
     },
     {

@@ -848,6 +848,7 @@ func main() {
 		licWrite.POST("/licenses/:id/reinstate", adminH.ReinstateLicense)
 		licWrite.POST("/licenses/:id/renew", adminIdem, adminH.RenewLicense)
 		licWrite.POST("/licenses/:id/change-plan", adminH.ChangeLicensePlan)
+		licWrite.PATCH("/licenses/:id/customer", adminH.SetLicenseCustomer)
 		licWrite.GET("/licenses/:id/usage", adminH.ListLicenseUsage)
 		licWrite.POST("/licenses/:id/usage/reset", adminH.ResetLicenseUsage)
 		licWrite.GET("/licenses/:id/seats", adminH.ListLicenseSeats)
@@ -901,6 +902,12 @@ func main() {
 		admin.GET("/audit-logs", adminH.ListAuditLogs)
 		admin.GET("/users", adminH.ListUsers)
 		admin.GET("/users/:id", adminH.GetUserDetail)
+		admin.GET("/customers", adminH.ListCustomers)
+		admin.POST("/customers", adminH.CreateCustomer)
+		admin.GET("/customers/:id", adminH.GetCustomer)
+		admin.PATCH("/customers/:id", adminH.UpdateCustomer)
+		admin.POST("/customers/:id/archive", adminH.ArchiveCustomer)
+		admin.POST("/customers/:id/restore", adminH.RestoreCustomer)
 
 		// ─── Releases (industry-standard bundle model) ───
 		// Resource: release with multiple platform artifacts (mirrors

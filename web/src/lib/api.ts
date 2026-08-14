@@ -181,6 +181,8 @@ export const admin = {
     search?: string
     external_customer_id?: string
     external_workspace_id?: string
+    customer_id?: string
+    unassigned_customer?: boolean
     offset?: number
     limit?: number
   }) => {
@@ -190,6 +192,8 @@ export const admin = {
     if (params?.search) q.set("search", params.search)
     if (params?.external_customer_id) q.set("external_customer_id", params.external_customer_id)
     if (params?.external_workspace_id) q.set("external_workspace_id", params.external_workspace_id)
+    if (params?.customer_id) q.set("customer_id", params.customer_id)
+    if (params?.unassigned_customer) q.set("unassigned_customer", "true")
     if (params?.offset) q.set("offset", String(params.offset))
     if (params?.limit) q.set("limit", String(params.limit))
     return get<{ licenses: License[]; total: number }>(`/admin/licenses?${q}`)
@@ -199,10 +203,13 @@ export const admin = {
     product_id: string
     plan_id: string
     email: string
+    customer_id?: string
     notes?: string
     external_customer_id?: string
     external_workspace_id?: string
   }) => post<License>("/admin/licenses", data),
+  setLicenseCustomer: (id: string, customerId: string) =>
+    patch<{ customer_id: string }>(`/admin/licenses/${id}/customer`, { customer_id: customerId }),
   revokeLicense: (id: string) => post(`/admin/licenses/${id}/revoke`),
   suspendLicense: (id: string) => post(`/admin/licenses/${id}/suspend`),
   reinstateLicense: (id: string) => post(`/admin/licenses/${id}/reinstate`),
@@ -362,9 +369,10 @@ export const admin = {
     return get<{ audit_logs: AuditLog[]; total: number }>(`/admin/audit-logs?${q}`)
   },
 
-  listUsers: (params?: { search?: string; offset?: number; limit?: number }) => {
+  listUsers: (params?: { search?: string; role?: string; offset?: number; limit?: number }) => {
     const q = new URLSearchParams()
     if (params?.search) q.set("search", params.search)
+    if (params?.role) q.set("role", params.role)
     if (params?.offset) q.set("offset", String(params.offset))
     if (params?.limit) q.set("limit", String(params.limit))
     return get<{ users: User[]; total: number }>(`/admin/users?${q}`)
@@ -382,6 +390,21 @@ export const admin = {
   },
 
   getUserDetail: (id: string) => get<UserDetail>(`/admin/users/${id}`),
+
+  listCustomers: (params?: { search?: string; kind?: string; status?: string; offset?: number; limit?: number }) => {
+    const q = new URLSearchParams()
+    if (params?.search) q.set("search", params.search)
+    if (params?.kind) q.set("kind", params.kind)
+    if (params?.status) q.set("status", params.status)
+    if (params?.offset) q.set("offset", String(params.offset))
+    if (params?.limit) q.set("limit", String(params.limit))
+    return get<{ customers: Customer[]; total: number }>(`/admin/customers?${q}`)
+  },
+  getCustomer: (id: string) => get<CustomerDetail>(`/admin/customers/${id}`),
+  createCustomer: (data: CustomerInput) => post<Customer>("/admin/customers", data),
+  updateCustomer: (id: string, data: CustomerInput) => patch<Customer>(`/admin/customers/${id}`, data),
+  archiveCustomer: (id: string) => post(`/admin/customers/${id}/archive`),
+  restoreCustomer: (id: string) => post(`/admin/customers/${id}/restore`),
 
   // Settings
   getSettings: () => get<{ settings: Record<string, string> }>("/admin/settings"),
@@ -481,6 +504,33 @@ export interface User {
   updated_at: string
 }
 
+export interface Customer {
+  id: string
+  kind: "individual" | "organization"
+  name: string
+  primary_email: string
+  phone?: string
+  company?: string
+  notes?: string
+  external_customer_id?: string
+  stripe_customer_id?: string
+  archived_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export type CustomerInput = Pick<Customer, "kind" | "name" | "primary_email"> &
+  Partial<Pick<Customer, "phone" | "company" | "notes" | "external_customer_id" | "stripe_customer_id">>
+
+export interface CustomerDetail {
+  customer: Customer
+  licenses: License[]
+  subscriptions: Subscription[]
+  total_usage: number
+  active_seats: number
+  activations: number
+}
+
 export interface Product {
   id: string
   name: string
@@ -528,6 +578,7 @@ export interface License {
   id: string
   product_id: string
   plan_id: string
+  customer_id?: string
   user_id?: string
   email: string
   license_key: string
@@ -546,6 +597,7 @@ export interface License {
   updated_at: string
   product?: Product
   plan?: Plan
+  customer?: Customer
   activations?: Activation[]
   seats?: Seat[]
   addons?: LicenseAddon[]

@@ -1,6 +1,8 @@
-import { useQuery } from "@tanstack/react-query"
-import { Eye, Search } from "lucide-react"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { Archive, Building2, Eye, Pencil, Plus, RotateCcw, Search, UserRound } from "lucide-react"
 import { useState } from "react"
+import { Link } from "react-router-dom"
+import { showToast } from "@/components/toast"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -16,54 +18,114 @@ import {
 } from "@/components/ui/data-table"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useI18n } from "@/i18n"
-import type { UserDetail } from "@/lib/api"
-import { admin } from "@/lib/api"
+import { admin, type Customer, type CustomerInput } from "@/lib/api"
 import { formatDate, statusColor } from "@/lib/utils"
+
+const emptyCustomer: CustomerInput = {
+  kind: "individual",
+  name: "",
+  primary_email: "",
+  phone: "",
+  company: "",
+  notes: "",
+  external_customer_id: "",
+  stripe_customer_id: "",
+}
 
 export default function CustomersPage() {
   const { t } = useI18n()
-  const [page, setPage] = useState(0)
+  const qc = useQueryClient()
   const [search, setSearch] = useState("")
+  const [kind, setKind] = useState("")
+  const [status, setStatus] = useState("active")
+  const [page, setPage] = useState(0)
+  const [editing, setEditing] = useState<Customer | "new" | null>(null)
+  const [viewing, setViewing] = useState<string | null>(null)
   const limit = 30
-  const [viewingUser, setViewingUser] = useState<string | null>(null)
-
   const { data, isLoading } = useQuery({
-    queryKey: ["admin", "users", search, page],
-    queryFn: () => admin.listUsers({ search: search || undefined, offset: page * limit, limit }),
+    queryKey: ["admin", "customers", search, kind, status, page],
+    queryFn: () =>
+      admin.listCustomers({
+        search: search || undefined,
+        kind: kind || undefined,
+        status,
+        offset: page * limit,
+        limit,
+      }),
   })
-
-  const customers = data?.users || []
+  const refresh = () => qc.invalidateQueries({ queryKey: ["admin", "customers"] })
+  const archiveMut = useMutation({
+    mutationFn: ({ id, restore }: { id: string; restore: boolean }) =>
+      restore ? admin.restoreCustomer(id) : admin.archiveCustomer(id),
+    onSuccess: () => {
+      refresh()
+      setViewing(null)
+      showToast(t("customers.saved"), "success")
+    },
+  })
+  const customers = data?.customers || []
   const total = data?.total || 0
-  const totalPages = Math.ceil(total / limit)
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">{t("customers.title")}</h1>
-        <p className="text-muted-foreground">{t("customers.subtitle", { count: total })}</p>
+      <div className="flex items-end justify-between gap-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+            {t("customers.eyebrow")}
+          </p>
+          <h1 className="text-2xl font-bold tracking-tight">{t("customers.title")}</h1>
+          <p className="text-muted-foreground">{t("customers.subtitle", { count: total })}</p>
+        </div>
+        <Button onClick={() => setEditing("new")}>
+          <Plus className="mr-2 h-4 w-4" />
+          {t("customers.new")}
+        </Button>
       </div>
-
-      <div className="flex items-center gap-4">
-        <div className="relative flex-1 max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative min-w-64 flex-1 max-w-md">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder={t("common.search")}
+            className="pl-9"
             value={search}
+            placeholder={t("customers.search")}
             onChange={(e) => {
               setSearch(e.target.value)
               setPage(0)
             }}
-            className="pl-9"
           />
         </div>
+        <select
+          className="h-10 rounded-md border bg-background px-3 text-sm"
+          value={kind}
+          onChange={(e) => {
+            setKind(e.target.value)
+            setPage(0)
+          }}
+        >
+          <option value="">{t("customers.allKinds")}</option>
+          <option value="individual">{t("customers.individual")}</option>
+          <option value="organization">{t("customers.organization")}</option>
+        </select>
+        <select
+          className="h-10 rounded-md border bg-background px-3 text-sm"
+          value={status}
+          onChange={(e) => {
+            setStatus(e.target.value)
+            setPage(0)
+          }}
+        >
+          <option value="active">{t("customers.active")}</option>
+          <option value="archived">{t("customers.archived")}</option>
+          <option value="all">{t("customers.allStatuses")}</option>
+        </select>
       </div>
-
       <Card>
         <CardContent className="pt-6">
           {isLoading ? (
-            <div className="h-64 animate-pulse bg-muted rounded-lg" />
+            <div className="h-64 animate-pulse rounded-lg bg-muted" />
           ) : (
             <>
               <DataTable>
@@ -71,38 +133,54 @@ export default function CustomersPage() {
                   <DataTableRow>
                     <DataTableHead>{t("customers.customer")}</DataTableHead>
                     <DataTableHead>{t("common.email")}</DataTableHead>
-                    <DataTableHead>{t("customers.joined")}</DataTableHead>
-                    <DataTableHead>{t("customers.lastUpdated")}</DataTableHead>
-                    <DataTableHead className="w-16">{t("common.actions")}</DataTableHead>
+                    <DataTableHead>{t("customers.phone")}</DataTableHead>
+                    <DataTableHead>{t("customers.externalId")}</DataTableHead>
+                    <DataTableHead>{t("common.status")}</DataTableHead>
+                    <DataTableHead className="w-24">{t("common.actions")}</DataTableHead>
                   </DataTableRow>
                 </DataTableHeader>
                 <DataTableBody>
-                  {customers.length === 0 && <DataTableEmpty colSpan={5} message={t("customers.empty")} />}
-                  {customers.map((u) => (
-                    <DataTableRow key={u.id}>
+                  {customers.length === 0 && <DataTableEmpty colSpan={6} message={t("customers.empty")} />}
+                  {customers.map((customer) => (
+                    <DataTableRow key={customer.id}>
                       <DataTableCell>
                         <div className="flex items-center gap-3">
-                          {u.avatar_url ? (
-                            <img src={u.avatar_url} className="h-8 w-8 rounded-full" alt="" />
-                          ) : (
-                            <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center text-xs font-bold">
-                              {u.name?.charAt(0)?.toUpperCase() || u.email.charAt(0).toUpperCase()}
-                            </div>
-                          )}
-                          <span className="font-medium">{u.name || "-"}</span>
+                          <div className="flex h-9 w-9 items-center justify-center rounded-lg border bg-muted/50">
+                            {customer.kind === "organization" ? (
+                              <Building2 className="h-4 w-4" />
+                            ) : (
+                              <UserRound className="h-4 w-4" />
+                            )}
+                          </div>
+                          <div>
+                            <p className="font-medium">{customer.name}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {customer.company || t(`customers.${customer.kind}` as any)}
+                            </p>
+                          </div>
                         </div>
                       </DataTableCell>
-                      <DataTableCell className="text-muted-foreground">{u.email}</DataTableCell>
-                      <DataTableCell className="text-muted-foreground text-xs">
-                        {formatDate(u.created_at)}
-                      </DataTableCell>
-                      <DataTableCell className="text-muted-foreground text-xs">
-                        {formatDate(u.updated_at)}
+                      <DataTableCell>{customer.primary_email}</DataTableCell>
+                      <DataTableCell className="text-muted-foreground">{customer.phone || "—"}</DataTableCell>
+                      <DataTableCell className="font-mono text-xs">
+                        {customer.external_customer_id || "—"}
                       </DataTableCell>
                       <DataTableCell>
-                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setViewingUser(u.id)}>
-                          <Eye className="h-4 w-4" />
-                        </Button>
+                        {customer.archived_at ? (
+                          <Badge variant="outline">{t("customers.archived")}</Badge>
+                        ) : (
+                          <Badge className="bg-emerald-100 text-emerald-800">{t("customers.active")}</Badge>
+                        )}
+                      </DataTableCell>
+                      <DataTableCell>
+                        <div className="flex">
+                          <Button variant="ghost" size="icon" onClick={() => setViewing(customer.id)}>
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={() => setEditing(customer)}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </DataTableCell>
                     </DataTableRow>
                   ))}
@@ -111,7 +189,7 @@ export default function CustomersPage() {
               {total > 0 && (
                 <DataTablePagination
                   page={page}
-                  totalPages={totalPages}
+                  totalPages={Math.ceil(total / limit)}
                   total={total}
                   pageSize={limit}
                   onPageChange={setPage}
@@ -121,166 +199,234 @@ export default function CustomersPage() {
           )}
         </CardContent>
       </Card>
-
-      <CustomerDetailDialog
-        userId={viewingUser}
-        open={!!viewingUser}
-        onOpenChange={(open) => {
-          if (!open) setViewingUser(null)
-        }}
-      />
+      {editing && (
+        <CustomerForm
+          customer={editing === "new" ? undefined : editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null)
+            refresh()
+          }}
+        />
+      )}
+      {viewing && (
+        <CustomerDetail
+          customerId={viewing}
+          onClose={() => setViewing(null)}
+          onEdit={(customer) => {
+            setViewing(null)
+            setEditing(customer)
+          }}
+          onArchive={(customer) => archiveMut.mutate({ id: customer.id, restore: !!customer.archived_at })}
+        />
+      )}
     </div>
   )
 }
 
-function CustomerDetailDialog({
-  userId,
-  open,
-  onOpenChange,
+function CustomerForm({
+  customer,
+  onClose,
+  onSaved,
 }: {
-  userId: string | null
-  open: boolean
-  onOpenChange: (open: boolean) => void
+  customer?: Customer
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const { t } = useI18n()
+  const [form, setForm] = useState<CustomerInput>(
+    customer
+      ? {
+          kind: customer.kind,
+          name: customer.name,
+          primary_email: customer.primary_email,
+          phone: customer.phone || "",
+          company: customer.company || "",
+          notes: customer.notes || "",
+          external_customer_id: customer.external_customer_id || "",
+          stripe_customer_id: customer.stripe_customer_id || "",
+        }
+      : emptyCustomer,
+  )
+  const save = useMutation({
+    mutationFn: () => (customer ? admin.updateCustomer(customer.id, form) : admin.createCustomer(form)),
+    onSuccess: () => {
+      showToast(t("customers.saved"), "success")
+      onSaved()
+    },
+  })
+  const field = (key: keyof CustomerInput, value: string) => setForm((old) => ({ ...old, [key]: value }))
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{customer ? t("customers.edit") : t("customers.new")}</DialogTitle>
+          <DialogDescription>{t("customers.formDesc")}</DialogDescription>
+        </DialogHeader>
+        <form
+          className="grid gap-4 sm:grid-cols-2"
+          onSubmit={(e) => {
+            e.preventDefault()
+            save.mutate()
+          }}
+        >
+          <div className="space-y-2">
+            <Label>{t("customers.kind")}</Label>
+            <select
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              value={form.kind}
+              onChange={(e) => field("kind", e.target.value)}
+            >
+              <option value="individual">{t("customers.individual")}</option>
+              <option value="organization">{t("customers.organization")}</option>
+            </select>
+          </div>
+          <div className="space-y-2">
+            <Label>{t("customers.name")}</Label>
+            <Input required maxLength={200} value={form.name} onChange={(e) => field("name", e.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <Label>{t("common.email")}</Label>
+            <Input
+              required
+              type="email"
+              value={form.primary_email}
+              onChange={(e) => field("primary_email", e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>{t("customers.phone")}</Label>
+            <Input maxLength={50} value={form.phone || ""} onChange={(e) => field("phone", e.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <Label>{t("customers.company")}</Label>
+            <Input maxLength={200} value={form.company || ""} onChange={(e) => field("company", e.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <Label>{t("customers.externalId")}</Label>
+            <Input
+              maxLength={256}
+              value={form.external_customer_id || ""}
+              onChange={(e) => field("external_customer_id", e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>{t("customers.stripeId")}</Label>
+            <Input
+              maxLength={256}
+              value={form.stripe_customer_id || ""}
+              onChange={(e) => field("stripe_customer_id", e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>{t("customers.notes")}</Label>
+            <Input maxLength={4000} value={form.notes || ""} onChange={(e) => field("notes", e.target.value)} />
+          </div>
+          <div className="flex justify-end gap-2 sm:col-span-2">
+            <Button type="button" variant="outline" onClick={onClose}>
+              {t("common.cancel")}
+            </Button>
+            <Button disabled={save.isPending}>{t("common.save")}</Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function CustomerDetail({
+  customerId,
+  onClose,
+  onEdit,
+  onArchive,
+}: {
+  customerId: string
+  onClose: () => void
+  onEdit: (customer: Customer) => void
+  onArchive: (customer: Customer) => void
 }) {
   const { t } = useI18n()
   const { data, isLoading } = useQuery({
-    queryKey: ["admin", "user-detail", userId],
-    queryFn: () => admin.getUserDetail(userId!),
-    enabled: !!userId,
+    queryKey: ["admin", "customer", customerId],
+    queryFn: () => admin.getCustomer(customerId),
   })
-
-  const detail: UserDetail | undefined = data
-
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[88vh] max-w-4xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{t("customers.detail")}</DialogTitle>
-          <DialogDescription>{detail?.user?.email || t("common.loading")}</DialogDescription>
+          <DialogTitle>{data?.customer.name || t("customers.detail")}</DialogTitle>
+          <DialogDescription>{data?.customer.primary_email || t("common.loading")}</DialogDescription>
         </DialogHeader>
-
-        {isLoading || !detail ? (
-          <div className="space-y-4">
-            <div className="h-24 bg-muted rounded-lg animate-pulse" />
-            <div className="h-48 bg-muted rounded-lg animate-pulse" />
-          </div>
+        {isLoading || !data ? (
+          <div className="h-72 animate-pulse rounded-lg bg-muted" />
         ) : (
-          <Tabs defaultValue="overview">
-            <TabsList>
-              <TabsTrigger value="overview">{t("customers.overview")}</TabsTrigger>
-              <TabsTrigger value="licenses">{t("customers.licenses")}</TabsTrigger>
-              <TabsTrigger value="subscriptions">{t("customers.subscriptions")}</TabsTrigger>
-              <TabsTrigger value="activity">{t("customers.activity")}</TabsTrigger>
-            </TabsList>
-
-            {/* Overview Tab */}
-            <TabsContent value="overview">
-              <div className="space-y-4">
-                {/* User info */}
-                <Card>
-                  <CardContent className="pt-6">
-                    <div className="flex items-center gap-4">
-                      {detail.user.avatar_url ? (
-                        <img src={detail.user.avatar_url} className="h-14 w-14 rounded-full" alt="" />
-                      ) : (
-                        <div className="h-14 w-14 rounded-full bg-muted flex items-center justify-center text-lg font-bold">
-                          {detail.user.name?.charAt(0)?.toUpperCase() || detail.user.email.charAt(0).toUpperCase()}
-                        </div>
-                      )}
-                      <div>
-                        <h3 className="text-lg font-semibold">{detail.user.name || "-"}</h3>
-                        <p className="text-sm text-muted-foreground">{detail.user.email}</p>
-                        <div className="flex gap-4 mt-1 text-xs text-muted-foreground">
-                          <span>
-                            {t("customers.joined")} {formatDate(detail.user.created_at)}
-                          </span>
-                          <span>
-                            {t("customers.lastUpdated")} {formatDate(detail.user.updated_at)}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {/* Summary stats */}
-                <div className="grid grid-cols-5 gap-3">
-                  {[
-                    { label: t("analytics.totalLicenses"), value: detail.licenses?.length ?? 0 },
-                    {
-                      label: t("analytics.active"),
-                      value: detail.licenses?.filter((l) => l.status === "active").length ?? 0,
-                    },
-                    { label: t("customers.totalUsage"), value: detail.total_usage ?? 0 },
-                    { label: t("customers.activeSeats"), value: detail.active_seats ?? 0 },
-                    { label: t("analytics.activations"), value: detail.activations ?? 0 },
-                  ].map((s) => (
-                    <Card key={s.label}>
-                      <CardContent className="pt-4 pb-3 text-center">
-                        <div className="text-2xl font-bold">{s.value.toLocaleString()}</div>
-                        <p className="text-xs text-muted-foreground">{s.label}</p>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-muted/30 p-4">
+              <div>
+                <p className="font-medium">{data.customer.company || t(`customers.${data.customer.kind}` as any)}</p>
+                <p className="text-sm text-muted-foreground">{data.customer.phone || t("customers.noPhone")}</p>
               </div>
-            </TabsContent>
-
-            {/* Licenses Tab */}
-            <TabsContent value="licenses">
-              {(detail.licenses || []).length === 0 ? (
-                <Card>
-                  <CardContent className="py-8">
-                    <p className="text-sm text-muted-foreground text-center">{t("customers.noLicenses")}</p>
-                  </CardContent>
-                </Card>
-              ) : (
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={() => onEdit(data.customer)}>
+                  <Pencil className="mr-2 h-4 w-4" />
+                  {t("customers.edit")}
+                </Button>
+                <Button variant="outline" onClick={() => onArchive(data.customer)}>
+                  {data.customer.archived_at ? (
+                    <RotateCcw className="mr-2 h-4 w-4" />
+                  ) : (
+                    <Archive className="mr-2 h-4 w-4" />
+                  )}
+                  {data.customer.archived_at ? t("customers.restore") : t("customers.archive")}
+                </Button>
+                {!data.customer.archived_at && (
+                  <Button asChild>
+                    <Link to={`/admin/licenses?customer_id=${data.customer.id}`}>
+                      <Plus className="mr-2 h-4 w-4" />
+                      {t("customers.issueLicense")}
+                    </Link>
+                  </Button>
+                )}
+              </div>
+            </div>
+            <Tabs defaultValue="licenses">
+              <TabsList>
+                <TabsTrigger value="licenses">
+                  {t("customers.licenses")} ({data.licenses.length})
+                </TabsTrigger>
+                <TabsTrigger value="subscriptions">
+                  {t("customers.subscriptions")} ({data.subscriptions.length})
+                </TabsTrigger>
+                <TabsTrigger value="overview">{t("customers.overview")}</TabsTrigger>
+              </TabsList>
+              <TabsContent value="licenses">
                 <DataTable>
                   <DataTableHeader>
                     <DataTableRow>
                       <DataTableHead>{t("common.product")}</DataTableHead>
                       <DataTableHead>{t("common.plan")}</DataTableHead>
+                      <DataTableHead>{t("common.email")}</DataTableHead>
                       <DataTableHead>{t("common.status")}</DataTableHead>
-                      <DataTableHead>{t("licenses.licenseKey")}</DataTableHead>
-                      <DataTableHead>{t("licenses.validUntil")}</DataTableHead>
                       <DataTableHead>{t("common.created")}</DataTableHead>
                     </DataTableRow>
                   </DataTableHeader>
                   <DataTableBody>
-                    {detail.licenses.map((l) => (
-                      <DataTableRow key={l.id}>
-                        <DataTableCell className="font-medium">{l.product?.name || l.product_id}</DataTableCell>
-                        <DataTableCell>{l.plan?.name || l.plan_id}</DataTableCell>
+                    {data.licenses.length === 0 && <DataTableEmpty colSpan={5} message={t("customers.noLicenses")} />}
+                    {data.licenses.map((license) => (
+                      <DataTableRow key={license.id}>
+                        <DataTableCell>{license.product?.name || "—"}</DataTableCell>
+                        <DataTableCell>{license.plan?.name || "—"}</DataTableCell>
+                        <DataTableCell>{license.email}</DataTableCell>
                         <DataTableCell>
-                          <Badge className={statusColor(l.status)}>{t(`status.${l.status}` as any)}</Badge>
+                          <Badge className={statusColor(license.status)}>{t(`status.${license.status}` as any)}</Badge>
                         </DataTableCell>
-                        <DataTableCell>
-                          <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">
-                            {l.license_key.length > 16 ? `${l.license_key.slice(0, 16)}...` : l.license_key}
-                          </code>
-                        </DataTableCell>
-                        <DataTableCell className="text-xs text-muted-foreground">
-                          {l.valid_until ? formatDate(l.valid_until) : "-"}
-                        </DataTableCell>
-                        <DataTableCell className="text-xs text-muted-foreground">
-                          {formatDate(l.created_at)}
-                        </DataTableCell>
+                        <DataTableCell>{formatDate(license.created_at)}</DataTableCell>
                       </DataTableRow>
                     ))}
                   </DataTableBody>
                 </DataTable>
-              )}
-            </TabsContent>
-
-            {/* Subscriptions Tab */}
-            <TabsContent value="subscriptions">
-              {(detail.subscriptions || []).length === 0 ? (
-                <Card>
-                  <CardContent className="py-8">
-                    <p className="text-sm text-muted-foreground text-center">{t("customers.noSubscriptions")}</p>
-                  </CardContent>
-                </Card>
-              ) : (
+              </TabsContent>
+              <TabsContent value="subscriptions">
                 <DataTable>
                   <DataTableHeader>
                     <DataTableRow>
@@ -288,90 +434,53 @@ function CustomerDetailDialog({
                       <DataTableHead>{t("common.status")}</DataTableHead>
                       <DataTableHead>{t("customers.provider")}</DataTableHead>
                       <DataTableHead>{t("customers.periodRange")}</DataTableHead>
-                      <DataTableHead>{t("customers.cancelAtEnd")}</DataTableHead>
-                      <DataTableHead>{t("common.created")}</DataTableHead>
                     </DataTableRow>
                   </DataTableHeader>
                   <DataTableBody>
-                    {detail.subscriptions.map((sub) => (
-                      <DataTableRow key={sub.id}>
-                        <DataTableCell className="font-medium">{sub.plan?.name || sub.plan_id}</DataTableCell>
+                    {data.subscriptions.length === 0 && (
+                      <DataTableEmpty colSpan={4} message={t("customers.noSubscriptions")} />
+                    )}
+                    {data.subscriptions.map((subscription) => (
+                      <DataTableRow key={subscription.id}>
+                        <DataTableCell>{subscription.plan?.name || "—"}</DataTableCell>
                         <DataTableCell>
-                          <Badge className={statusColor(sub.status)}>{t(`status.${sub.status}` as any)}</Badge>
+                          <Badge className={statusColor(subscription.status)}>
+                            {t(`status.${subscription.status}` as any)}
+                          </Badge>
                         </DataTableCell>
-                        <DataTableCell className="text-muted-foreground">{sub.payment_provider || "-"}</DataTableCell>
-                        <DataTableCell className="text-xs text-muted-foreground">
-                          <div>
-                            {sub.current_period_start ? formatDate(sub.current_period_start) : "-"}
-                            {" - "}
-                            {sub.current_period_end ? formatDate(sub.current_period_end) : "-"}
-                          </div>
-                          {sub.trial_start && (
-                            <div className="text-violet-600 mt-0.5">
-                              Trial: {formatDate(sub.trial_start)} - {formatDate(sub.trial_end)}
-                            </div>
-                          )}
-                        </DataTableCell>
+                        <DataTableCell>{subscription.payment_provider || "—"}</DataTableCell>
                         <DataTableCell>
-                          {sub.cancel_at_period_end ? (
-                            <Badge variant="destructive">{t("common.yes")}</Badge>
-                          ) : (
-                            <span className="text-muted-foreground text-xs">{t("common.no")}</span>
-                          )}
-                        </DataTableCell>
-                        <DataTableCell className="text-xs text-muted-foreground">
-                          {formatDate(sub.created_at)}
+                          {subscription.current_period_start
+                            ? `${formatDate(subscription.current_period_start)} — ${formatDate(subscription.current_period_end)}`
+                            : "—"}
                         </DataTableCell>
                       </DataTableRow>
                     ))}
                   </DataTableBody>
                 </DataTable>
-              )}
-            </TabsContent>
-
-            {/* Activity Tab */}
-            <TabsContent value="activity">
-              {(detail.recent_audit_logs || []).length === 0 ? (
-                <Card>
-                  <CardContent className="py-8">
-                    <p className="text-sm text-muted-foreground text-center">{t("customers.noRecentActivity")}</p>
-                  </CardContent>
-                </Card>
-              ) : (
-                <div className="space-y-2">
-                  {detail.recent_audit_logs.map((a) => (
-                    <div key={a.id} className="flex items-center gap-3 py-2 border-b last:border-0 text-sm">
-                      <span className="text-xs text-muted-foreground w-36 shrink-0">{formatDate(a.created_at)}</span>
-                      <Badge variant="outline" className="shrink-0">
-                        {a.entity}
-                      </Badge>
-                      <Badge
-                        className={
-                          a.action.includes("create")
-                            ? "bg-emerald-100 text-emerald-800"
-                            : a.action.includes("delete") || a.action.includes("revoke")
-                              ? "bg-red-100 text-red-800"
-                              : a.action.includes("update")
-                                ? "bg-blue-100 text-blue-800"
-                                : a.action.includes("suspend")
-                                  ? "bg-orange-100 text-orange-800"
-                                  : "bg-gray-100 text-gray-800"
-                        }
-                      >
-                        {a.action}
-                      </Badge>
-                      <span
-                        className="font-mono text-xs text-muted-foreground truncate max-w-[180px]"
-                        title={a.entity_id}
-                      >
-                        {a.entity_id.length > 12 ? `${a.entity_id.slice(0, 12)}...` : a.entity_id}
-                      </span>
-                    </div>
+              </TabsContent>
+              <TabsContent value="overview">
+                <div className="grid gap-3 sm:grid-cols-4">
+                  {[
+                    [t("analytics.totalLicenses"), data.licenses.length],
+                    [t("customers.totalUsage"), data.total_usage],
+                    [t("customers.activeSeats"), data.active_seats],
+                    [t("analytics.activations"), data.activations],
+                  ].map(([label, value]) => (
+                    <Card key={String(label)}>
+                      <CardContent className="pt-5">
+                        <p className="text-2xl font-bold">{Number(value).toLocaleString()}</p>
+                        <p className="text-xs text-muted-foreground">{label}</p>
+                      </CardContent>
+                    </Card>
                   ))}
                 </div>
-              )}
-            </TabsContent>
-          </Tabs>
+                {data.customer.notes && (
+                  <p className="mt-4 whitespace-pre-wrap rounded-lg border p-4 text-sm">{data.customer.notes}</p>
+                )}
+              </TabsContent>
+            </Tabs>
+          </>
         )}
       </DialogContent>
     </Dialog>

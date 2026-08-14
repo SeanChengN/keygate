@@ -21,6 +21,27 @@ type User struct {
 	UpdatedAt time.Time `bun:",nullzero,default:now()" json:"updated_at"`
 }
 
+// Customer is a business record and deliberately independent from User,
+// which represents an identity that can sign in to Keygate.
+type Customer struct {
+	bun.BaseModel `bun:"table:customers"`
+
+	ID                 string     `bun:",pk" json:"id"`
+	Kind               string     `bun:",notnull,default:'individual'" json:"kind"`
+	Name               string     `bun:",notnull" json:"name"`
+	PrimaryEmail       string     `bun:",notnull" json:"primary_email"`
+	Phone              string     `bun:",notnull,default:''" json:"phone,omitempty"`
+	Company            string     `bun:",notnull,default:''" json:"company,omitempty"`
+	Notes              string     `bun:",notnull,default:''" json:"notes,omitempty"`
+	ExternalCustomerID string     `bun:",notnull,default:''" json:"external_customer_id,omitempty"`
+	StripeCustomerID   string     `bun:",notnull,default:''" json:"stripe_customer_id,omitempty"`
+	ArchivedAt         *time.Time `json:"archived_at,omitempty"`
+	CreatedAt          time.Time  `bun:",nullzero,default:now()" json:"created_at"`
+	UpdatedAt          time.Time  `bun:",nullzero,default:now()" json:"updated_at"`
+
+	Licenses []*License `bun:"rel:has-many,join:id=customer_id" json:"licenses,omitempty"`
+}
+
 // IsAdmin returns true if the user has admin or owner role.
 func (u *User) IsAdmin() bool {
 	return u.Role == "owner" || u.Role == "admin"
@@ -271,6 +292,7 @@ type License struct {
 	ID         string `bun:",pk" json:"id"`
 	ProductID  string `bun:",notnull" json:"product_id"`
 	PlanID     string `bun:",notnull" json:"plan_id"`
+	CustomerID string `bun:",nullzero" json:"customer_id,omitempty"`
 	UserID     string `bun:",nullzero" json:"user_id,omitempty"`
 	Email      string `bun:",notnull" json:"email"`
 	LicenseKey string `bun:",notnull,unique" json:"license_key"`
@@ -310,6 +332,7 @@ type License struct {
 
 	Product     *Product        `bun:"rel:belongs-to,join:product_id=id" json:"product,omitempty"`
 	Plan        *Plan           `bun:"rel:belongs-to,join:plan_id=id" json:"plan,omitempty"`
+	Customer    *Customer       `bun:"rel:belongs-to,join:customer_id=id" json:"customer,omitempty"`
 	Activations []*Activation   `bun:"rel:has-many,join:id=license_id" json:"activations,omitempty"`
 	Seats       []*Seat         `bun:"rel:has-many,join:id=license_id" json:"seats,omitempty"`
 	Addons      []*LicenseAddon `bun:"rel:has-many,join:id=license_id" json:"addons,omitempty"`

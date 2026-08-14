@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"time"
@@ -224,7 +225,7 @@ func (s *Store) FindLicenseByID(ctx context.Context, id string) (*model.License,
 	return l, s.DB.NewSelect().Model(l).
 		Relation("Plan").
 		Relation("Plan.Entitlements").
-		Relation("Product").
+		Relation("Product").Relation("Customer").
 		Relation("Activations").
 		Where("license.id = ?", id).
 		Scan(ctx)
@@ -379,9 +380,12 @@ func (s *Store) GetStats(ctx context.Context) (*Stats, error) {
 
 // ─── Users ───
 
-// ListUsers returns only customers (role='user'). Admins are managed separately.
-func (s *Store) ListUsers(ctx context.Context, search string, offset, limit int) ([]*model.User, int, error) {
-	q := s.DB.NewSelect().Model((*model.User)(nil)).Where("role = 'user'")
+// ListUsers returns sign-in identities independently from business customers.
+func (s *Store) ListUsers(ctx context.Context, search, role string, offset, limit int) ([]*model.User, int, error) {
+	q := s.DB.NewSelect().Model((*model.User)(nil))
+	if role != "" {
+		q = q.Where("role = ?", role)
+	}
 	if search != "" {
 		q = q.Where("(email ILIKE ? OR name ILIKE ?)", "%"+search+"%", "%"+search+"%")
 	}
@@ -393,6 +397,24 @@ func (s *Store) ListUsers(ctx context.Context, search string, offset, limit int)
 	err = q.OrderExpr("created_at DESC").
 		Offset(offset).Limit(limit).Scan(ctx, &out)
 	return out, total, err
+}
+
+func (s *Store) SetLicenseCustomer(ctx context.Context, licenseID, customerID string) error {
+	q := s.DB.NewUpdate().Model((*model.License)(nil)).Set("updated_at = now()").Where("id = ?", licenseID)
+	if customerID == "" {
+		q = q.Set("customer_id = NULL")
+	} else {
+		q = q.Set("customer_id = ?", customerID)
+	}
+	res, err := q.Exec(ctx)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // ─── Activation (admin) ───

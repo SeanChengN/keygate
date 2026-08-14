@@ -52,7 +52,7 @@ info:
     This prevents an attacker from probing valid `license_key` values
     by status-code differentiation. Paid users discover lifecycle
     state via email + the portal, not via these endpoints.
-  version: 1.1.0
+  version: 1.2.0
   contact:
     name: Keygate
     url: https://keygate.app
@@ -72,6 +72,8 @@ servers:
 security: []
 
 tags:
+  - name: Customers
+    description: Manage business customer records independently from sign-in users
   - name: License
     description: Activate, verify, and deactivate licenses
   - name: Entitlements
@@ -817,6 +819,91 @@ paths:
         "409":
           description: Not a manual subscription, or license must be reinstated first
 
+  /admin/customers:
+    get:
+      tags: [Customers]
+      summary: List customers
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      parameters:
+        - {name: search, in: query, schema: {type: string}}
+        - {name: kind, in: query, schema: {type: string, enum: [individual, organization]}}
+        - {name: status, in: query, schema: {type: string, enum: [active, archived, all]}}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200": {description: Paginated customer records}
+    post:
+      tags: [Customers]
+      summary: Create a customer
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CustomerInput"}
+      responses:
+        "201": {description: Customer created}
+        "409": {description: External or Stripe customer ID already exists}
+
+  /admin/customers/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      tags: [Customers]
+      summary: Get a customer and license-derived activity
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      responses:
+        "200": {description: Customer details}
+        "404": {description: Customer not found}
+    patch:
+      tags: [Customers]
+      summary: Update a customer without changing license delivery emails
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CustomerInput"}
+      responses:
+        "200": {description: Customer updated}
+
+  /admin/customers/{id}/archive:
+    post:
+      tags: [Customers]
+      summary: Archive a customer
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        "200": {description: Customer archived; related licenses are unchanged}
+
+  /admin/customers/{id}/restore:
+    post:
+      tags: [Customers]
+      summary: Restore an archived customer
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        "200": {description: Customer restored}
+
+  /admin/licenses/{id}/customer:
+    patch:
+      tags: [Customers]
+      summary: Assign or clear a license customer
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {customer_id: {type: string, description: Empty string clears the association}}
+      responses:
+        "200": {description: Association changed}
+        "409": {description: Customer is archived}
+
 components:
   parameters:
     ProductSlug:
@@ -875,6 +962,28 @@ components:
         browsers attach it automatically.
 
   schemas:
+    CustomerInput:
+      type: object
+      required: [kind, name, primary_email]
+      properties:
+        kind: {type: string, enum: [individual, organization]}
+        name: {type: string, maxLength: 200}
+        primary_email: {type: string, format: email, maxLength: 254}
+        phone: {type: string, maxLength: 50}
+        company: {type: string, maxLength: 200}
+        notes: {type: string, maxLength: 4000}
+        external_customer_id: {type: string, maxLength: 256}
+        stripe_customer_id: {type: string, maxLength: 256}
+    Customer:
+      allOf:
+        - {$ref: "#/components/schemas/CustomerInput"}
+        - type: object
+          required: [id, created_at, updated_at]
+          properties:
+            id: {type: string, format: uuid}
+            archived_at: {type: string, format: date-time, nullable: true}
+            created_at: {type: string, format: date-time}
+            updated_at: {type: string, format: date-time}
     ActivateResponse:
       type: object
       properties:

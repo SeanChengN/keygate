@@ -337,6 +337,23 @@ func (h *StripeHandler) fulfillCheckout(ctx context.Context, email, customerID, 
 		status = model.StatusTrialing
 	}
 
+	var businessCustomer *model.Customer
+	if customerID != "" {
+		var created bool
+		var restored bool
+		var customerErr error
+		businessCustomer, created, restored, customerErr = h.Store.FindOrCreateStripeCustomer(ctx, customerID, email)
+		if customerErr != nil {
+			slog.Error("stripe checkout: failed to resolve customer", "customer_id", customerID, "error", customerErr)
+			return
+		}
+		if created {
+			h.Store.Audit(ctx, &model.AuditLog{Entity: "customer", EntityID: businessCustomer.ID, Action: "created", ActorType: source, Changes: map[string]any{"stripe_customer_id": customerID}})
+		} else if restored {
+			h.Store.Audit(ctx, &model.AuditLog{Entity: "customer", EntityID: businessCustomer.ID, Action: "restored", ActorType: source, Changes: map[string]any{"stripe_customer_id": customerID}})
+		}
+	}
+
 	lic := &model.License{
 		ProductID:        plan.ProductID,
 		PlanID:           plan.ID,
@@ -345,6 +362,9 @@ func (h *StripeHandler) fulfillCheckout(ctx context.Context, email, customerID, 
 		PaymentProvider:  "stripe",
 		StripeCustomerID: customerID,
 		Status:           status,
+	}
+	if businessCustomer != nil {
+		lic.CustomerID = businessCustomer.ID
 	}
 
 	if plan.LicenseType == "trial" && plan.TrialDays > 0 {
@@ -356,18 +376,9 @@ func (h *StripeHandler) fulfillCheckout(ctx context.Context, email, customerID, 
 		lic.StripeSubscriptionID = subscriptionID
 	}
 
-	// Ensure user record exists so they appear in Customers
-	_ = h.Store.UpsertUser(ctx, &model.User{Email: email})
-
 	if err := h.Store.CreateLicenseWithSubscription(ctx, lic, plan); err != nil {
 		slog.Error("stripe checkout: failed to create license", "email", email, "error", err)
 		return
-	}
-
-	// Link license to user
-	if u, err := h.Store.FindUserByEmail(ctx, email); err == nil {
-		lic.UserID = u.ID
-		_ = h.Store.UpdateLicenseUser(ctx, lic.ID, u.ID)
 	}
 
 	productName := h.productName(ctx, plan.ProductID)
