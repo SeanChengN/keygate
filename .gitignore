@@ -29,6 +29,7 @@ Thumbs.db
 .claude/
 .claude.*
 .codex/
+.codegraph/
 .gemini/
 .cursor/
 .aider*
