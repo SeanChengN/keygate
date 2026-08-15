@@ -35,6 +35,9 @@ Thumbs.db
 .aider*
 .copilot/
 
+# Local recycle bin
+.recycle-bin/
+
 # Frontend
 web/node_modules/
 web/dist/
