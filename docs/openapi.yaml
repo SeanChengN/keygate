@@ -773,6 +773,76 @@ paths:
         "404":
           description: Unknown product_slug
 
+  /admin/licenses:
+    post:
+      tags: [Admin]
+      summary: Issue a license
+      description: |
+        Issues a license and creates its subscription record atomically when
+        the selected plan is a subscription or trial. For a subscription,
+        omitting `valid_until` creates one configured billing period; providing
+        it sets a custom first period end in both records.
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [product_id, plan_id, email]
+              properties:
+                product_id: {type: string, format: uuid}
+                plan_id: {type: string, format: uuid}
+                email: {type: string, format: email}
+                customer_id: {type: string, format: uuid}
+                notes: {type: string}
+                external_customer_id: {type: string, maxLength: 256}
+                external_workspace_id: {type: string, maxLength: 256}
+                valid_until:
+                  type: string
+                  format: date-time
+                  description: Optional future RFC 3339 expiry.
+      responses:
+        "201": {description: License and any subscription record created}
+        "400": {description: Invalid request, plan mismatch, or non-future expiry}
+        "404": {description: Product, plan, or customer not found}
+        "409": {description: Customer is archived}
+
+  /admin/licenses/{id}/valid-until:
+    post:
+      tags: [Admin]
+      summary: Set or clear a license expiry
+      description: |
+        Sets a future RFC 3339 expiry. An empty value clears the expiry for a
+        non-subscription license. Manual subscriptions require a non-empty
+        expiry and update `licenses.valid_until` and the latest subscription's
+        `current_period_end` atomically. Stripe-managed licenses are rejected.
+        Changing the date does not reinstate an expired license. A successful
+        change dispatches `license.expiry_changed`.
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [valid_until]
+              properties:
+                valid_until:
+                  type: string
+                  description: Future RFC 3339 timestamp, or empty for a non-subscription license.
+      responses:
+        "200": {description: License expiry changed}
+        "400": {description: Invalid or non-future expiry}
+        "404": {description: License not found}
+        "409":
+          description: STRIPE_MANAGED, SUBSCRIPTION_EXPIRY_REQUIRED, or SUBSCRIPTION_RECORD_REQUIRED
+
   /admin/licenses/{id}/renew:
     post:
       tags: [Admin]

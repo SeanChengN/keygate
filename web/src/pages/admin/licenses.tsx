@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Ban, Check, Copy, Eye, Package, Pause, Play, Plus, RefreshCw, Search, Trash2 } from "lucide-react"
+import { Ban, Check, Copy, Eye, Package, Pause, Pencil, Play, Plus, RefreshCw, Search, Trash2 } from "lucide-react"
 import { useEffect, useState } from "react"
 import { Link, useSearchParams } from "react-router-dom"
 import { showToast } from "@/components/toast"
@@ -35,6 +35,24 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useI18n } from "@/i18n"
 import { admin } from "@/lib/api"
 import { formatDate, statusColor } from "@/lib/utils"
+
+// A date picked in the expiry field means "valid through that whole
+// day" in the admin's local timezone, so the license dies at local
+// 23:59:59 rather than end-of-day UTC (which renders as an odd
+// mid-evening time for anyone west of Greenwich).
+function endOfDayISO(date: string): string {
+  const [y, m, d] = date.split("-").map(Number)
+  return new Date(y, m - 1, d, 23, 59, 59).toISOString()
+}
+
+// Inverse of endOfDayISO for prefilling the date input: the stored
+// instant rendered as a local YYYY-MM-DD (slicing the UTC string
+// would land on the next day for anyone west of Greenwich).
+function localDateValue(iso: string): string {
+  const d = new Date(iso)
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
 
 export default function LicensesPage() {
   const { t } = useI18n()
@@ -232,7 +250,7 @@ export default function LicensesPage() {
                         <Badge className={statusColor(lic.status)}>{t(`status.${lic.status}` as any)}</Badge>
                       </DataTableCell>
                       <DataTableCell className="text-muted-foreground text-xs">
-                        {formatDate(lic.valid_until)}
+                        {lic.valid_until ? formatDate(lic.valid_until) : t("licenses.perpetual")}
                       </DataTableCell>
                       <DataTableCell className="text-muted-foreground text-xs">
                         {formatDate(lic.created_at)}
@@ -297,6 +315,7 @@ function CreateLicenseDialog({
     notes?: string
     external_customer_id?: string
     external_workspace_id?: string
+    valid_until?: string
   }) => void
   loading: boolean
   initialCustomerId?: string
@@ -308,6 +327,7 @@ function CreateLicenseDialog({
   const [planId, setPlanId] = useState("")
   const [externalCustomerID, setExternalCustomerID] = useState("")
   const [externalWorkspaceID, setExternalWorkspaceID] = useState("")
+  const [validUntil, setValidUntil] = useState("")
   const [customerId, setCustomerId] = useState(initialCustomerId || "")
   const [addingCustomer, setAddingCustomer] = useState(false)
   const [newCustomerName, setNewCustomerName] = useState("")
@@ -377,6 +397,7 @@ function CreateLicenseDialog({
               notes,
               external_customer_id: externalCustomerID.trim() || undefined,
               external_workspace_id: externalWorkspaceID.trim() || undefined,
+              valid_until: validUntil ? endOfDayISO(validUntil) : undefined,
             })
           }}
           className="space-y-4"
@@ -492,6 +513,20 @@ function CreateLicenseDialog({
             <Label>{t("licenses.notesOptional")}</Label>
             <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
+          <div className="space-y-2">
+            <Label>{t("licenses.validUntilOptional")}</Label>
+            <Input
+              type="date"
+              value={validUntil}
+              min={new Date().toISOString().slice(0, 10)}
+              onChange={(e) => setValidUntil(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              {selectedPlan?.license_type === "subscription"
+                ? t("licenses.validUntilSubscriptionHint")
+                : t("licenses.validUntilHint")}
+            </p>
+          </div>
           {/* External identifiers — opaque strings the merchant uses
               to map their own user/workspace model to this license.
               Both optional; leave blank if not integrating with an
@@ -536,6 +571,9 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const { data: lic, isLoading } = useQuery({ queryKey: ["admin", "license", id], queryFn: () => admin.getLicense(id) })
   const [copied, setCopied] = useState(false)
   const [changingPlan, setChangingPlan] = useState(false)
+  // null = not editing; "" = editing with an empty value (perpetual
+  // licenses only; subscriptions must always retain a period end).
+  const [editingValidUntil, setEditingValidUntil] = useState<string | null>(null)
   const { data: customersData } = useQuery({
     queryKey: ["admin", "customers", "license-detail"],
     queryFn: () => admin.listCustomers({ status: "active", limit: 100 }),
@@ -578,6 +616,14 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin"] })
       showToast(t("licenses.renewed"), "success")
+    },
+    onError: (error: Error) => showToast(error.message, "error"),
+  })
+  const validUntilMut = useMutation({
+    mutationFn: (validUntil: string) => admin.setLicenseValidUntil(id, validUntil),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin"] })
+      setEditingValidUntil(null)
     },
     onError: (error: Error) => showToast(error.message, "error"),
   })
@@ -681,11 +727,63 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                   </div>
                   <div>
                     <p className="text-muted-foreground">{t("licenses.commercialValidUntil")}</p>
-                    <p className="mt-1">
-                      {lic.plan?.license_type === "perpetual"
-                        ? t("licenses.perpetualLicense")
-                        : formatDate(lic.valid_until)}
-                    </p>
+                    {editingValidUntil === null ? (
+                      <div className="flex items-center gap-1 mt-1">
+                        <p>{lic.valid_until ? formatDate(lic.valid_until) : t("licenses.perpetual")}</p>
+                        {/* Stripe owns the expiry for subscription licenses —
+                            editing it here would be overwritten on renewal. */}
+                        {lic.payment_provider !== "stripe" && !lic.stripe_subscription_id && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6"
+                            title={t("licenses.validUntilEdit")}
+                            onClick={() => setEditingValidUntil(lic.valid_until ? localDateValue(lic.valid_until) : "")}
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </Button>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="mt-1 space-y-1">
+                        <div className="flex items-center gap-1">
+                          <Input
+                            type="date"
+                            className="h-7 w-40 text-xs"
+                            value={editingValidUntil}
+                            onChange={(e) => setEditingValidUntil(e.target.value)}
+                          />
+                          <Button
+                            size="sm"
+                            className="h-7"
+                            disabled={
+                              validUntilMut.isPending ||
+                              (lic.plan?.license_type === "subscription" && !editingValidUntil)
+                            }
+                            onClick={() =>
+                              validUntilMut.mutate(editingValidUntil ? endOfDayISO(editingValidUntil) : "")
+                            }
+                          >
+                            {t("common.save")}
+                          </Button>
+                          <Button size="sm" variant="ghost" className="h-7" onClick={() => setEditingValidUntil(null)}>
+                            {t("common.cancel")}
+                          </Button>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {lic.plan?.license_type === "subscription"
+                            ? t("licenses.validUntilSubscriptionRequired")
+                            : t("licenses.validUntilClear")}
+                        </p>
+                        {/* An expired license stays dead no matter what date
+                            is set — assertUsable short-circuits on the status
+                            before it ever reads valid_until. Say so, or the
+                            admin walks away thinking the edit revived it. */}
+                        {lic.status === "expired" && (
+                          <p className="text-xs text-amber-600">{t("licenses.validUntilExpiredHint")}</p>
+                        )}
+                      </div>
+                    )}
                   </div>
                   {lic.plan?.license_type === "subscription" && (
                     <div>

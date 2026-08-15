@@ -207,9 +207,13 @@ export const admin = {
     notes?: string
     external_customer_id?: string
     external_workspace_id?: string
+    valid_until?: string
   }) => post<License>("/admin/licenses", data),
   setLicenseCustomer: (id: string, customerId: string) =>
     patch<{ customer_id: string }>(`/admin/licenses/${id}/customer`, { customer_id: customerId }),
+  // Empty valid_until clears the expiry for non-subscription licenses.
+  setLicenseValidUntil: (id: string, validUntil: string) =>
+    post<License>(`/admin/licenses/${id}/valid-until`, { valid_until: validUntil }),
   revokeLicense: (id: string) => post(`/admin/licenses/${id}/revoke`),
   suspendLicense: (id: string) => post(`/admin/licenses/${id}/suspend`),
   reinstateLicense: (id: string) => post(`/admin/licenses/${id}/reinstate`),

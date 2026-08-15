@@ -403,6 +403,77 @@ func TestManualSubscriptionRenewalAndPlanChange(t *testing.T) {
 	}
 }
 
+func TestSetLicenseValidUntilSynchronizesSubscription(t *testing.T) {
+	s := setupTestDB(t)
+	defer s.Close()
+	ctx := context.Background()
+	suffix := time.Now().Format("150405.000000")
+
+	product := &model.Product{Name: "Expiry Test", Slug: "expiry-" + suffix, Type: "desktop"}
+	if err := s.CreateProduct(ctx, product); err != nil {
+		t.Fatalf("create product: %v", err)
+	}
+	plan := &model.Plan{
+		ProductID: product.ID, Name: "Monthly", Slug: "monthly-expiry-" + suffix,
+		LicenseType: "subscription", BillingInterval: "month", LicenseModel: "standard", GraceDays: 7,
+	}
+	if err := s.CreatePlan(ctx, plan); err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+
+	original := time.Now().Add(30 * 24 * time.Hour).UTC().Truncate(time.Second)
+	lic := &model.License{
+		ProductID: product.ID, PlanID: plan.ID, Email: "expiry@example.com",
+		LicenseKey: "EXPIRY-" + suffix, Status: model.StatusActive,
+		ValidFrom: time.Now(), ValidUntil: &original,
+	}
+	if err := s.CreateLicenseWithSubscription(ctx, lic, plan); err != nil {
+		t.Fatalf("create subscription license: %v", err)
+	}
+
+	adjusted := original.Add(10 * 24 * time.Hour)
+	if err := s.SetLicenseValidUntil(ctx, lic.ID, &adjusted, true); err != nil {
+		t.Fatalf("adjust subscription expiry: %v", err)
+	}
+	found, err := s.FindLicenseByID(ctx, lic.ID)
+	if err != nil {
+		t.Fatalf("find adjusted license: %v", err)
+	}
+	sub, err := s.FindSubscriptionByLicense(ctx, lic.ID)
+	if err != nil {
+		t.Fatalf("find adjusted subscription: %v", err)
+	}
+	if found.ValidUntil == nil || !found.ValidUntil.Equal(adjusted) {
+		t.Fatalf("license expiry = %v, want %s", found.ValidUntil, adjusted)
+	}
+	if sub.CurrentPeriodEnd == nil || !sub.CurrentPeriodEnd.Equal(adjusted) {
+		t.Fatalf("subscription period end = %v, want %s", sub.CurrentPeriodEnd, adjusted)
+	}
+
+	if err := s.SetLicenseValidUntil(ctx, lic.ID, nil, true); !errors.Is(err, store.ErrSubscriptionExpiryRequired) {
+		t.Fatalf("clear subscription expiry error = %v, want ErrSubscriptionExpiryRequired", err)
+	}
+
+	orphan := &model.License{
+		ProductID: product.ID, PlanID: plan.ID, Email: "orphan@example.com",
+		LicenseKey: "ORPHAN-" + suffix, Status: model.StatusActive,
+		ValidFrom: time.Now(), ValidUntil: &original,
+	}
+	if err := s.CreateLicense(ctx, orphan); err != nil {
+		t.Fatalf("create orphan subscription license: %v", err)
+	}
+	if err := s.SetLicenseValidUntil(ctx, orphan.ID, &adjusted, true); !errors.Is(err, store.ErrSubscriptionRecordRequired) {
+		t.Fatalf("orphan adjustment error = %v, want ErrSubscriptionRecordRequired", err)
+	}
+	unchanged, err := s.FindLicenseByID(ctx, orphan.ID)
+	if err != nil {
+		t.Fatalf("find orphan license: %v", err)
+	}
+	if unchanged.ValidUntil == nil || !unchanged.ValidUntil.Equal(original) {
+		t.Fatalf("orphan expiry changed despite rollback: %v", unchanged.ValidUntil)
+	}
+}
+
 func TestSubscriptionPeriodMigrationBackfillsLegacyRows(t *testing.T) {
 	s := setupTestDB(t)
 	defer s.Close()

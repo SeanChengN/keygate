@@ -14,6 +14,8 @@ import (
 var (
 	ErrManualRenewalNotSubscription = errors.New("license is not a manual subscription")
 	ErrManualRenewalBlocked         = errors.New("license must be reinstated before renewal")
+	ErrSubscriptionExpiryRequired   = errors.New("subscription licenses must have an expiry")
+	ErrSubscriptionRecordRequired   = errors.New("subscription record is missing")
 )
 
 type ManualRenewalResult struct {
@@ -73,6 +75,58 @@ func (s *Store) UpdateSubscription(ctx context.Context, sub *model.Subscription,
 	cols = append(cols, "updated_at")
 	_, err := s.DB.NewUpdate().Model(sub).Column(cols...).WherePK().Exec(ctx)
 	return err
+}
+
+// SetLicenseValidUntil updates the license expiry and, for a manual
+// subscription, its latest subscription period end in one transaction.
+// Requiring the subscription row prevents the two sources of commercial
+// expiry from silently diverging.
+func (s *Store) SetLicenseValidUntil(ctx context.Context, licenseID string, validUntil *time.Time, syncSubscription bool) error {
+	if syncSubscription && validUntil == nil {
+		return ErrSubscriptionExpiryRequired
+	}
+
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var sub *model.Subscription
+	if syncSubscription {
+		sub = new(model.Subscription)
+		if err := tx.NewSelect().Model(sub).
+			Where("subscription.license_id = ?", licenseID).
+			OrderExpr("subscription.created_at DESC").
+			Limit(1).
+			For("UPDATE").
+			Scan(ctx); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrSubscriptionRecordRequired
+			}
+			return err
+		}
+	}
+
+	now := time.Now()
+	if _, err := tx.NewUpdate().Model((*model.License)(nil)).
+		Set("valid_until = ?", validUntil).
+		Set("updated_at = ?", now).
+		Where("id = ?", licenseID).
+		Exec(ctx); err != nil {
+		return err
+	}
+	if sub != nil {
+		if _, err := tx.NewUpdate().Model((*model.Subscription)(nil)).
+			Set("current_period_end = ?", validUntil).
+			Set("updated_at = ?", now).
+			Where("id = ?", sub.ID).
+			Exec(ctx); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
 // RenewManualSubscription advances one paid calendar period and records the
