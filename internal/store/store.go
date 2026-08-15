@@ -606,13 +606,29 @@ func (s *Store) UpdateLicenseAndSubscription(ctx context.Context, lic *model.Lic
 		return err
 	}
 
-	// Sync subscription status if one exists
-	if _, err := tx.NewRaw(`
-		UPDATE subscriptions SET status = ?, updated_at = now()
-		WHERE license_id = ? AND status != ?
-	`, lic.Status, lic.ID, lic.Status).Exec(ctx); err != nil {
-		// Non-fatal: subscription may not exist
-		slog.Warn("sync subscription status failed", "license_id", lic.ID, "error", err)
+	syncPeriodEnd := false
+	for _, column := range cols {
+		if column == "valid_until" {
+			syncPeriodEnd = true
+			break
+		}
+	}
+
+	// Sync subscription status and, when changed, its commercial period end.
+	var syncErr error
+	if syncPeriodEnd {
+		_, syncErr = tx.NewRaw(`
+			UPDATE subscriptions SET status = ?, current_period_end = ?, updated_at = now()
+			WHERE license_id = ?
+		`, lic.Status, lic.ValidUntil, lic.ID).Exec(ctx)
+	} else {
+		_, syncErr = tx.NewRaw(`
+			UPDATE subscriptions SET status = ?, updated_at = now()
+			WHERE license_id = ? AND status != ?
+		`, lic.Status, lic.ID, lic.Status).Exec(ctx)
+	}
+	if syncErr != nil {
+		return syncErr
 	}
 
 	return tx.Commit()

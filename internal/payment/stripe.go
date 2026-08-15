@@ -21,6 +21,7 @@ import (
 	"github.com/stripe/stripe-go/v82/subscription"
 	"github.com/stripe/stripe-go/v82/webhook"
 
+	"github.com/tabloy/keygate/internal/billing"
 	"github.com/tabloy/keygate/internal/license"
 	"github.com/tabloy/keygate/internal/model"
 	"github.com/tabloy/keygate/internal/service"
@@ -42,6 +43,14 @@ type StripeHandler struct {
 
 	mu            sync.RWMutex
 	webhookSecret string // runtime-updatable, guarded by mu
+}
+
+func (h *StripeHandler) billingPeriodEnd(ctx context.Context, unixSeconds int64) (time.Time, error) {
+	location, err := h.Store.BillingLocation(ctx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return billing.EndOfDay(time.Unix(unixSeconds, 0), location), nil
 }
 
 // GetWebhookSecret returns the current webhook signing secret (thread-safe).
@@ -519,7 +528,11 @@ func (h *StripeHandler) onInvoicePaid(ctx context.Context, raw json.RawMessage) 
 	if lic.PastDueAt != nil {
 		episode = lic.PastDueAt.Unix()
 	}
-	until := time.Unix(data.PeriodEnd, 0)
+	until, err := h.billingPeriodEnd(ctx, data.PeriodEnd)
+	if err != nil {
+		slog.Error("invoice paid billing timezone invalid", "license_id", lic.ID, "error", err)
+		return
+	}
 	lic.ValidUntil = &until
 	lic.Status = model.StatusActive
 	lic.PastDueAt = nil
@@ -588,7 +601,11 @@ func (h *StripeHandler) onSubscriptionUpdated(ctx context.Context, raw json.RawM
 		lic.PastDueAt = nil
 	}
 
-	until := time.Unix(data.CurrentPeriodEnd, 0)
+	until, err := h.billingPeriodEnd(ctx, data.CurrentPeriodEnd)
+	if err != nil {
+		slog.Error("subscription update billing timezone invalid", "license_id", lic.ID, "error", err)
+		return
+	}
 	lic.ValidUntil = &until
 	_ = h.Store.UpdateLicenseAndSubscription(ctx, lic, cols...)
 
@@ -773,7 +790,10 @@ func (h *StripeHandler) CancelSubscription(c *gin.Context) {
 		lic.Status = model.StatusCanceled
 		lic.CanceledAt = &now
 		lic.ValidUntil = &now
-		_ = h.Store.UpdateLicense(c, lic, "status", "canceled_at", "valid_until")
+		if err := h.Store.UpdateLicenseAndSubscription(c, lic, "status", "canceled_at", "valid_until"); err != nil {
+			response.Internal(c)
+			return
+		}
 	} else {
 		sub, updateErr := subscription.Update(lic.StripeSubscriptionID, &stripe.SubscriptionParams{
 			CancelAtPeriodEnd: stripe.Bool(true),
@@ -782,10 +802,18 @@ func (h *StripeHandler) CancelSubscription(c *gin.Context) {
 			response.Internal(c)
 			return
 		}
-		// Set ValidUntil to when Stripe will cancel the subscription
-		periodEnd := time.Unix(sub.CancelAt, 0)
+		// The subscription remains usable through the cancellation date in
+		// the timezone selected in General settings.
+		periodEnd, periodErr := h.billingPeriodEnd(c, sub.CancelAt)
+		if periodErr != nil {
+			response.Err(c, http.StatusInternalServerError, "BILLING_TIMEZONE_INVALID", periodErr.Error())
+			return
+		}
 		lic.ValidUntil = &periodEnd
-		_ = h.Store.UpdateLicense(c, lic, "valid_until")
+		if err := h.Store.UpdateLicenseAndSubscription(c, lic, "valid_until"); err != nil {
+			response.Internal(c)
+			return
+		}
 	}
 
 	h.Store.Audit(c, &model.AuditLog{

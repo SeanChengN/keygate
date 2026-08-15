@@ -32,26 +32,24 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { useSiteConfig } from "@/hooks/use-site-config"
 import { useI18n } from "@/i18n"
 import { admin } from "@/lib/api"
 import { formatDate, statusColor } from "@/lib/utils"
 
-// A date picked in the expiry field means "valid through that whole
-// day" in the admin's local timezone, so the license dies at local
-// 23:59:59 rather than end-of-day UTC (which renders as an odd
-// mid-evening time for anyone west of Greenwich).
-function endOfDayISO(date: string): string {
-  const [y, m, d] = date.split("-").map(Number)
-  return new Date(y, m - 1, d, 23, 59, 59).toISOString()
-}
-
-// Inverse of endOfDayISO for prefilling the date input: the stored
-// instant rendered as a local YYYY-MM-DD (slicing the UTC string
-// would land on the next day for anyone west of Greenwich).
-function localDateValue(iso: string): string {
-  const d = new Date(iso)
-  const pad = (n: number) => String(n).padStart(2, "0")
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+// The backend interprets a selected calendar date in General settings'
+// timezone and stores that local day's 23:59:59 boundary.
+// For prefilling the date input, render the stored instant in that same
+// timezone instead of the administrator browser's local timezone.
+function systemDateValue(iso: string, timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone || "UTC",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(iso))
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return `${values.year}-${values.month}-${values.day}`
 }
 
 export default function LicensesPage() {
@@ -397,7 +395,7 @@ function CreateLicenseDialog({
               notes,
               external_customer_id: externalCustomerID.trim() || undefined,
               external_workspace_id: externalWorkspaceID.trim() || undefined,
-              valid_until: validUntil ? endOfDayISO(validUntil) : undefined,
+              valid_until: validUntil || undefined,
             })
           }}
           className="space-y-4"
@@ -567,6 +565,7 @@ function CreateLicenseDialog({
 
 function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const { t } = useI18n()
+  const { timezone } = useSiteConfig()
   const qc = useQueryClient()
   const { data: lic, isLoading } = useQuery({ queryKey: ["admin", "license", id], queryFn: () => admin.getLicense(id) })
   const [copied, setCopied] = useState(false)
@@ -738,7 +737,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                             size="icon"
                             className="h-6 w-6"
                             title={t("licenses.validUntilEdit")}
-                            onClick={() => setEditingValidUntil(lic.valid_until ? localDateValue(lic.valid_until) : "")}
+                            onClick={() => setEditingValidUntil(lic.valid_until ? systemDateValue(lic.valid_until, timezone) : "")}
                           >
                             <Pencil className="h-3 w-3" />
                           </Button>
@@ -761,7 +760,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                               (lic.plan?.license_type === "subscription" && !editingValidUntil)
                             }
                             onClick={() =>
-                              validUntilMut.mutate(editingValidUntil ? endOfDayISO(editingValidUntil) : "")
+                              validUntilMut.mutate(editingValidUntil || "")
                             }
                           >
                             {t("common.save")}

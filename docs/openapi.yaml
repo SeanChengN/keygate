@@ -800,8 +800,7 @@ paths:
                 external_workspace_id: {type: string, maxLength: 256}
                 valid_until:
                   type: string
-                  format: date-time
-                  description: Optional future RFC 3339 expiry.
+                  description: Optional future YYYY-MM-DD date or RFC 3339 timestamp. The server normalizes it to 23:59:59 in the configured system timezone.
       responses:
         "201": {description: License and any subscription record created}
         "400": {description: Invalid request, plan mismatch, or non-future expiry}
@@ -813,7 +812,9 @@ paths:
       tags: [Admin]
       summary: Set or clear a license expiry
       description: |
-        Sets a future RFC 3339 expiry. An empty value clears the expiry for a
+        Sets a future YYYY-MM-DD date or RFC 3339 expiry. The server interprets
+        it in Settings → General → Timezone and normalizes it to 23:59:59 on
+        that local date. An empty value clears the expiry for a
         non-subscription license. Manual subscriptions require a non-empty
         expiry and update `licenses.valid_until` and the latest subscription's
         `current_period_end` atomically. Stripe-managed licenses are rejected.
@@ -835,7 +836,7 @@ paths:
               properties:
                 valid_until:
                   type: string
-                  description: Future RFC 3339 timestamp, or empty for a non-subscription license.
+                  description: Future YYYY-MM-DD date or RFC 3339 timestamp, or empty for a non-subscription license.
       responses:
         "200": {description: License expiry changed}
         "400": {description: Invalid or non-future expiry}

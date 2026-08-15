@@ -905,20 +905,6 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 		return
 	}
 
-	var validUntil *time.Time
-	if req.ValidUntil != "" {
-		ts, err := time.Parse(time.RFC3339, req.ValidUntil)
-		if err != nil {
-			response.BadRequest(c, "valid_until must be an RFC 3339 timestamp")
-			return
-		}
-		if !ts.After(time.Now()) {
-			response.BadRequest(c, "valid_until must be in the future")
-			return
-		}
-		validUntil = &ts
-	}
-
 	// Look up plan first to determine license type and set appropriate fields
 	plan, err := h.Store.FindPlanByID(c, req.PlanID)
 	if err != nil {
@@ -934,6 +920,28 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 		response.Err(c, http.StatusBadRequest, "PLAN_PRODUCT_MISMATCH",
 			"plan does not belong to the requested product")
 		return
+	}
+
+	var validUntil *time.Time
+	var billingLocation *time.Location
+	if req.ValidUntil != "" || plan.LicenseType == "subscription" {
+		billingLocation, err = h.Store.BillingLocation(c)
+		if err != nil {
+			response.Err(c, http.StatusInternalServerError, "BILLING_TIMEZONE_INVALID", err.Error())
+			return
+		}
+	}
+	if req.ValidUntil != "" {
+		ts, parseErr := billing.ParseExpiry(req.ValidUntil, billingLocation)
+		if parseErr != nil {
+			response.BadRequest(c, "valid_until must be YYYY-MM-DD or an RFC 3339 timestamp")
+			return
+		}
+		if !ts.After(time.Now()) {
+			response.BadRequest(c, "valid_until must be in the future")
+			return
+		}
+		validUntil = &ts
 	}
 	// API-key scoping: a key bound to product A can't mint a license
 	// for product B even if it carries licenses:write.
@@ -976,7 +984,7 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 	if validUntil != nil {
 		l.ValidUntil = validUntil
 	} else if plan.LicenseType == "subscription" {
-		until, periodErr := billing.AddPeriod(now, plan.BillingInterval)
+		until, periodErr := billing.AddPeriod(now, plan.BillingInterval, billingLocation)
 		if periodErr != nil {
 			response.BadRequest(c, periodErr.Error())
 			return
@@ -1214,11 +1222,17 @@ func (h *AdminHandler) SetLicenseValidUntil(c *gin.Context) {
 		return
 	}
 
+	syncSubscription := lic.Plan != nil && lic.Plan.LicenseType == "subscription"
 	var validUntil *time.Time
 	if req.ValidUntil != "" {
-		ts, err := time.Parse(time.RFC3339, req.ValidUntil)
+		location, locationErr := h.Store.BillingLocation(c)
+		if locationErr != nil {
+			response.Err(c, http.StatusInternalServerError, "BILLING_TIMEZONE_INVALID", locationErr.Error())
+			return
+		}
+		ts, err := billing.ParseExpiry(req.ValidUntil, location)
 		if err != nil {
-			response.BadRequest(c, "valid_until must be an RFC 3339 timestamp or empty")
+			response.BadRequest(c, "valid_until must be YYYY-MM-DD, an RFC 3339 timestamp, or empty")
 			return
 		}
 		// Same rule as CreateLicense. Back-dating is not an "expire now"
@@ -1232,7 +1246,6 @@ func (h *AdminHandler) SetLicenseValidUntil(c *gin.Context) {
 		validUntil = &ts
 	}
 
-	syncSubscription := lic.Plan != nil && lic.Plan.LicenseType == "subscription"
 	if syncSubscription && validUntil == nil {
 		response.Conflict(c, "SUBSCRIPTION_EXPIRY_REQUIRED",
 			"subscription licenses must have an expiry", nil)
@@ -1913,6 +1926,12 @@ func (h *AdminHandler) UpdateSettings(c *gin.Context) {
 	for key := range req.Settings {
 		if !allowed[key] {
 			response.BadRequest(c, "unknown setting: "+key)
+			return
+		}
+	}
+	if timezone, ok := req.Settings["timezone"]; ok && strings.TrimSpace(timezone) != "" {
+		if _, err := billing.Location(timezone); err != nil {
+			response.BadRequest(c, "timezone must be a valid IANA timezone")
 			return
 		}
 	}

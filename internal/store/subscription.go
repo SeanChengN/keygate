@@ -132,6 +132,10 @@ func (s *Store) SetLicenseValidUntil(ctx context.Context, licenseID string, vali
 // RenewManualSubscription advances one paid calendar period and records the
 // license, subscription and audit fact atomically.
 func (s *Store) RenewManualSubscription(ctx context.Context, licenseID, actorID string, now time.Time) (*ManualRenewalResult, error) {
+	billingLocation, err := s.BillingLocation(ctx)
+	if err != nil {
+		return nil, err
+	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -185,7 +189,7 @@ func (s *Store) RenewManualSubscription(ctx context.Context, licenseID, actorID 
 		periodStart = *sub.CurrentPeriodStart
 	}
 
-	periodEnd, err := billing.AddPeriod(base, lic.Plan.BillingInterval)
+	periodEnd, err := billing.AddPeriod(base, lic.Plan.BillingInterval, billingLocation)
 	if err != nil {
 		return nil, err
 	}

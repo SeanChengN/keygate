@@ -2,7 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"time"
 
+	"github.com/tabloy/keygate/internal/billing"
 	"github.com/uptrace/bun"
 )
 
@@ -10,6 +14,16 @@ type Setting struct {
 	bun.BaseModel `bun:"table:settings"`
 	Key           string `bun:",pk" json:"key"`
 	Value         string `json:"value"`
+}
+
+// BillingLocation returns the IANA timezone selected in General settings.
+// UTC is the established default when the setting is absent or empty.
+func (s *Store) BillingLocation(ctx context.Context) (*time.Location, error) {
+	value, err := s.GetSetting(ctx, "timezone")
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	return billing.Location(value)
 }
 
 func (s *Store) GetSetting(ctx context.Context, key string) (string, error) {

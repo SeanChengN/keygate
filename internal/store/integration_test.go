@@ -307,7 +307,7 @@ func TestManualSubscriptionRenewalAndPlanChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("early renewal: %v", err)
 	}
-	wantMonthlyEnd := time.Date(2026, time.February, 28, 0, 0, 0, 0, time.UTC)
+	wantMonthlyEnd := time.Date(2026, time.February, 28, 23, 59, 59, 0, time.UTC)
 	if !renewed.CurrentPeriodEnd.Equal(wantMonthlyEnd) {
 		t.Fatalf("early renewal end = %s, want %s", renewed.CurrentPeriodEnd, wantMonthlyEnd)
 	}
@@ -337,7 +337,7 @@ func TestManualSubscriptionRenewalAndPlanChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("yearly renewal after plan change: %v", err)
 	}
-	wantYearlyEnd := time.Date(2027, time.February, 28, 0, 0, 0, 0, time.UTC)
+	wantYearlyEnd := time.Date(2027, time.February, 28, 23, 59, 59, 0, time.UTC)
 	if !renewed.CurrentPeriodEnd.Equal(wantYearlyEnd) {
 		t.Fatalf("yearly renewal end = %s, want %s", renewed.CurrentPeriodEnd, wantYearlyEnd)
 	}
@@ -355,7 +355,7 @@ func TestManualSubscriptionRenewalAndPlanChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("late renewal: %v", err)
 	}
-	wantLeapEnd := time.Date(2024, time.February, 29, 0, 0, 0, 0, time.UTC)
+	wantLeapEnd := time.Date(2024, time.February, 29, 23, 59, 59, 0, time.UTC)
 	if !lateResult.CurrentPeriodEnd.Equal(wantLeapEnd) || lateResult.License.Status != model.StatusActive {
 		t.Fatalf("late renewal = (%s, %s), want (%s, active)", lateResult.CurrentPeriodEnd, lateResult.License.Status, wantLeapEnd)
 	}
