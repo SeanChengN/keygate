@@ -23,7 +23,7 @@ git diff --check
 git status --short
 ```
 
-前端以仓库中的 `web/bun.lock` 为准，不要为了发版生成或提交 `package-lock.json`。如果本机没有 Bun，可先依赖 GitHub `CI` 工作流完成同样检查；只有 `main` 的后端和前端任务全部成功后才允许创建发布标签。
+前端以仓库中的 `web/bun.lock` 为准，不要为了发版生成或提交 `package-lock.json`。如果本机没有 Bun，可在 GitHub 手工运行 `CI` 工作流完成同样检查；该工作流固定使用 Bun 1.3.14。普通 `main` 推送和拉取请求不会自动运行完整托管 CI，提交者必须完成本地或手工验证。
 
 确认测试通过且 `git status --short` 只列出本次要发布的文件。不要提交 `.env`、密钥、数据库、对象存储数据、`node_modules` 或构建产物。
 
@@ -52,7 +52,7 @@ git show --no-patch --oneline $Tag
 git push origin $Tag
 ```
 
-`git show` 中的提交必须就是第二步记录的发布提交。最后一条 `git push origin $Tag` 会自动触发本仓库 `.github/workflows/release.yml` 中的 `Release` 工作流；该工作流调用 `softprops/action-gh-release` 自动创建同名 GitHub 源码 Release，不需要再到 GitHub 页面手工点击“Create a new release”。它不会构建生产容器镜像。
+`git show` 中的提交必须就是第二步记录的发布提交。最后一条 `git push origin $Tag` 会自动触发本仓库 `.github/workflows/release.yml` 中的 `Release` 工作流；该工作流先对标签指向的精确提交调用与手工验证相同的后端和前端检查，全部成功后才调用 `softprops/action-gh-release` 创建同名 GitHub 源码 Release。验证失败时 Release 任务因 `needs: validate` 不会运行，因此不会发布未通过检查的源码。该工作流不会构建生产容器镜像。
 
 可以在命令行查看并等待这次自动工作流：
 

@@ -737,7 +737,9 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                             size="icon"
                             className="h-6 w-6"
                             title={t("licenses.validUntilEdit")}
-                            onClick={() => setEditingValidUntil(lic.valid_until ? systemDateValue(lic.valid_until, timezone) : "")}
+                            onClick={() =>
+                              setEditingValidUntil(lic.valid_until ? systemDateValue(lic.valid_until, timezone) : "")
+                            }
                           >
                             <Pencil className="h-3 w-3" />
                           </Button>
@@ -759,9 +761,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                               validUntilMut.isPending ||
                               (lic.plan?.license_type === "subscription" && !editingValidUntil)
                             }
-                            onClick={() =>
-                              validUntilMut.mutate(editingValidUntil || "")
-                            }
+                            onClick={() => validUntilMut.mutate(editingValidUntil || "")}
                           >
                             {t("common.save")}
                           </Button>
