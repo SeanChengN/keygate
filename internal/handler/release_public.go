@@ -78,9 +78,12 @@ func NewReleasePublicHandler(c ReleasePublicConfig) *ReleasePublicHandler {
 func (h *ReleasePublicHandler) Download(c *gin.Context) {
 	var req struct {
 		LicenseKey string `json:"license_key" binding:"required"`
+		Identifier string `json:"identifier"`
+		ProductID  string `json:"product_id"`
 		Platform   string `json:"platform" binding:"required"`
 		Version    string `json:"version"`
 		Channel    string `json:"channel"`
+		deviceProofRequest
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "license_key and platform are required")
@@ -88,11 +91,13 @@ func (h *ReleasePublicHandler) Download(c *gin.Context) {
 	}
 	productID, _ := c.Get("product_id")
 	out, err := h.svc.GenerateDownload(c.Request.Context(), service.DownloadInput{
-		LicenseKey: req.LicenseKey,
-		ProductID:  str(productID),
-		Version:    req.Version,
-		Platform:   req.Platform,
-		Channel:    req.Channel,
+		LicenseKey:  req.LicenseKey,
+		ProductID:   firstNonEmpty(str(productID), strings.TrimSpace(req.ProductID)),
+		Identifier:  strings.TrimSpace(req.Identifier),
+		Version:     req.Version,
+		Platform:    req.Platform,
+		Channel:     req.Channel,
+		DeviceProof: req.deviceProofRequest.serviceInput(),
 	})
 	if err != nil {
 		writeAppErr(c, err)

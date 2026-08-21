@@ -498,38 +498,6 @@ func main() {
 		middleware.RateLimitByIP(60, time.Minute),
 		authH.AcceptInvite(seatSvc))
 
-	// Release feed endpoints.
-	//
-	// Auth model: all channels (stable / beta / alpha / dev) are public.
-	// Trust comes from the artifact's ed25519 signature, verified by
-	// Sparkle/Velopack/Tauri on the client — not from URL secrecy.
-	// License enforcement happens at app start (POST /license/verify),
-	// not at update-feed time. To keep a pre-release channel private,
-	// don't publish to it; once published, treat the feed URL as public.
-	//
-	// Feed clients poll on a timer — sometimes once a minute. We give
-	// the per-IP bucket 4× the regular API limit so a single host
-	// running multiple installed products doesn't trip the 60/min default.
-	feedRateLimit := max(cfg.RateLimitAPI*4, 240)
-	feedMW := []gin.HandlerFunc{
-		middleware.RateLimitByIP(feedRateLimit, time.Minute),
-	}
-	v1.GET("/releases/:product_slug/feed.xml", append(feedMW, releasePublicH.FeedSparkle)...)
-	v1.GET("/releases/:product_slug/feed.json", append(feedMW, releasePublicH.FeedVelopack)...)
-	v1.GET("/releases/:product_slug/upgrade.json", append(feedMW, releasePublicH.FeedTauri)...)
-
-	// Old /releases/feed.* (no product slug, license-key auth) → 410 Gone
-	// with a migration hint. Pre-launch hard cutover; no live clients.
-	feedGone := func(c *gin.Context) {
-		response.Err(c, http.StatusGone, "FEED_PATH_REMOVED",
-			"feed URL changed: use /api/v1/releases/{product_slug}/feed.xml|feed.json|upgrade.json. "+
-				"Feeds are public; trust is established via the artifact's ed25519 signature.")
-	}
-	v1.GET("/releases/feed.xml", feedGone)
-	v1.GET("/releases/feed.json", feedGone)
-	v1.GET("/releases/upgrade.json", feedGone)
-	v1.GET("/releases/feed", feedGone)
-
 	auth := v1.Group("/auth", middleware.RateLimitByIP(cfg.RateLimitAuth, time.Minute))
 	{
 		auth.GET("/providers", authH.Providers)

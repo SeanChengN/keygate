@@ -40,7 +40,7 @@ type VerifyToken struct {
 	ValidUntil  *int64         `json:"vld,omitempty"`
 	GraceDays   int            `json:"grc"`
 	Nonce       string         `json:"nce"`           // unique per-issuance to prevent replay
-	Fingerprint string         `json:"fpr,omitempty"` // SHA256(identifier+product_id) for binding
+	Fingerprint string         `json:"fpr,omitempty"` // v3: SHA256(device public key); legacy: identifier+product_id
 }
 
 // PrivateKeyFromHex parses a 32-byte ed25519 seed (64 hex chars) and

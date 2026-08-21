@@ -58,7 +58,7 @@ Public SDK endpoints (activate / verify / deactivate / usage / download) take `l
 
 ### 🚀 Software Distribution
 
-Ship signed updates to your installed clients. **Sparkle** (macOS), **Velopack** (Windows), and **Tauri** (cross-platform) updaters all consume the same release feed — one publish, every updater compatible. Per-platform binaries grouped under a single release, **atomic publish gate** (no half-uploaded releases ever leak), **yank** for instant rollback. Per-product **Ed25519 signing keys** with private keys encrypted at rest under AES-256-GCM + HKDF-derived subkeys. Server-side SHA-256 for integrity (never trust the client's hash). Stable feeds are public — your customers' auto-updater never breaks when a license rotates. Per-product `minimum_supported_version` floor for forced upgrades.
+Ship signed updates to installed clients through license-gated, device-proof-bound downloads. Per-platform binaries are grouped under one release with an **atomic publish gate** (half-uploaded releases never leak) and **yank** for immediate rollback. Per-product **Ed25519 signing keys** are encrypted at rest with AES-256-GCM and HKDF-derived subkeys, and the server independently calculates SHA-256. Public Sparkle, Velopack, and Tauri feeds are not registered; every artifact download requires an active license and a fresh device proof. Per-product `minimum_supported_version` floors remain available for forced upgrades.
 
 Object storage is S3-compatible — Cloudflare R2, AWS S3, MinIO, anything that speaks SigV4. Presigned URLs for direct browser upload (no proxying through Keygate), and license-gated short-TTL download URLs.
 

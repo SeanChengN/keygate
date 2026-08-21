@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"testing"
 	"time"
 
@@ -16,15 +17,19 @@ func TestSignTokenAtSeparatesCommercialExpiryFromLease(t *testing.T) {
 		t.Fatalf("generate signing key: %v", err)
 	}
 	svc := &LicenseService{signingKey: privateKey}
-	now := time.Date(2026, time.August, 11, 8, 0, 0, 0, time.UTC)
-	commercialEnd := time.Date(2026, time.September, 11, 8, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
+	commercialEnd := now.AddDate(0, 1, 0)
 	lic := &model.License{
 		ID: "lic-1", ProductID: "product-1", PlanID: "plan-1", Status: model.StatusActive,
 		ValidUntil: &commercialEnd,
 		Plan:       &model.Plan{Name: "WMS 月卡", LicenseType: "subscription", BillingInterval: "month", GraceDays: 7},
 	}
+	devicePublicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate device key: %v", err)
+	}
 
-	signed, err := svc.signTokenAt(lic, "device-1", now)
+	signed, err := svc.signTokenAt(lic, "device-1", now, base64.RawURLEncoding.EncodeToString(devicePublicKey))
 	if err != nil {
 		t.Fatalf("sign token: %v", err)
 	}
@@ -32,7 +37,7 @@ func TestSignTokenAtSeparatesCommercialExpiryFromLease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify token: %v", err)
 	}
-	if parsed.Version != 2 || parsed.PlanName != "WMS 月卡" || parsed.LicenseType != "subscription" {
+	if parsed.Version != 3 || parsed.PlanName != "WMS 月卡" || parsed.LicenseType != "subscription" {
 		t.Fatalf("commercial identity fields mismatch: %+v", parsed)
 	}
 	if parsed.ValidUntil == nil || *parsed.ValidUntil != commercialEnd.Unix() {
@@ -43,6 +48,35 @@ func TestSignTokenAtSeparatesCommercialExpiryFromLease(t *testing.T) {
 	}
 	if parsed.GraceDays != 7 {
 		t.Fatalf("commercial grace = %d, want 7", parsed.GraceDays)
+	}
+}
+
+func TestSignTokenAtBindsDevicePublicKey(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	devicePublicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &LicenseService{signingKey: privateKey}
+	lic := &model.License{
+		ID: "lic-1", ProductID: "product-1", PlanID: "plan-1", Status: model.StatusActive,
+		Plan: &model.Plan{Name: "WMS 永久版", LicenseType: "perpetual"},
+	}
+	encodedDeviceKey := base64.RawURLEncoding.EncodeToString(devicePublicKey)
+	signed, err := svc.signTokenAt(lic, "device-1", time.Now(), encodedDeviceKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := licensepkg.Verify(signed, privateKey.Public().(ed25519.PublicKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFingerprint, _ := licensepkg.DevicePublicKeyFingerprint(encodedDeviceKey)
+	if parsed.Version != 3 || parsed.Fingerprint != wantFingerprint {
+		t.Fatalf("device-bound token mismatch: %+v", parsed)
 	}
 }
 
