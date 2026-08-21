@@ -85,7 +85,7 @@ tags:
   - name: Floating
     description: Concurrent session checkout for floating licenses
   - name: Releases
-    description: License-gated download + auto-update feeds (Sparkle / Velopack / Tauri)
+    description: License-gated, device-proof-bound release downloads
   - name: Admin
     description: Administrative license operations
 
@@ -168,6 +168,22 @@ paths:
                   type: string
                   description: Human-readable name for the activation
                   example: "MacBook Pro"
+                product_id:
+                  type: string
+                  description: Product UUID included in the signed device proof
+                device_public_key:
+                  type: string
+                  description: Base64url raw Ed25519 public key. First proof-aware activation binds this key permanently to the activation.
+                proof_timestamp:
+                  type: integer
+                  format: int64
+                  description: Current Unix timestamp; accepted within a five-minute clock window
+                proof_nonce:
+                  type: string
+                  description: Base64url 16-byte single-use nonce
+                proof_signature:
+                  type: string
+                  description: Base64url Ed25519 signature over the canonical action and request fields
       responses:
         "200":
           description: Activation successful
@@ -216,6 +232,17 @@ paths:
                   type: string
                 identifier:
                   type: string
+                product_id:
+                  type: string
+                device_public_key:
+                  type: string
+                proof_timestamp:
+                  type: integer
+                  format: int64
+                proof_nonce:
+                  type: string
+                proof_signature:
+                  type: string
       responses:
         "200":
           description: Verification result
@@ -246,6 +273,18 @@ paths:
                 license_key:
                   type: string
                 identifier:
+                  type: string
+                  description: Required once any activation for this license is device-key bound
+                product_id:
+                  type: string
+                device_public_key:
+                  type: string
+                proof_timestamp:
+                  type: integer
+                  format: int64
+                proof_nonce:
+                  type: string
+                proof_signature:
                   type: string
       responses:
         "200":
@@ -609,9 +648,9 @@ paths:
       summary: Get a license-gated download URL
       description: |
         Returns a short-lived presigned URL for the artifact matching
-        `(product, channel, platform, version?)`. Used for manual /
-        gated downloads — the auto-update path uses the public feed
-        endpoints below (no per-call license check).
+        `(product, channel, platform, version?)`. Every request requires
+        an active license, a bound installation identifier, and a fresh
+        Ed25519 device proof. Public auto-update feeds are not registered.
 
         If `version` is omitted, returns the latest published release
         in the channel that has an artifact for `platform`. Channel
@@ -625,6 +664,20 @@ paths:
               required: [license_key, platform]
               properties:
                 license_key:
+                  type: string
+                identifier:
+                  type: string
+                  description: Required once this license has a device-key-bound activation
+                product_id:
+                  type: string
+                device_public_key:
+                  type: string
+                proof_timestamp:
+                  type: integer
+                  format: int64
+                proof_nonce:
+                  type: string
+                proof_signature:
                   type: string
                 platform:
                   type: string
@@ -684,94 +737,6 @@ paths:
           description: Specifically-requested version was yanked
         "503":
           description: Storage not configured on this server
-
-  /releases/{product_slug}/feed.xml:
-    get:
-      tags: [Releases]
-      summary: Sparkle appcast (per-platform)
-      description: |
-        Sparkle-compatible XML appcast. Stable channel is public
-        (no auth); non-stable channels are also public — internal
-        / customer-specific builds belong on internal CI/CD
-        distribution, not these feeds.
-      parameters:
-        - $ref: "#/components/parameters/ProductSlug"
-        - $ref: "#/components/parameters/Platform"
-        - $ref: "#/components/parameters/Channel"
-        - $ref: "#/components/parameters/Limit"
-      responses:
-        "200":
-          description: Sparkle XML appcast
-          content:
-            application/xml: {}
-        "400":
-          description: Invalid platform / channel / limit
-        "404":
-          description: Unknown product_slug
-
-  /releases/{product_slug}/feed.json:
-    get:
-      tags: [Releases]
-      summary: Velopack feed (per-platform)
-      parameters:
-        - $ref: "#/components/parameters/ProductSlug"
-        - $ref: "#/components/parameters/Platform"
-        - $ref: "#/components/parameters/Channel"
-        - $ref: "#/components/parameters/Limit"
-      responses:
-        "200":
-          description: Velopack JSON array
-          content:
-            application/json: {}
-        "400":
-          description: Invalid platform / channel / limit
-        "404":
-          description: Unknown product_slug
-
-  /releases/{product_slug}/upgrade.json:
-    get:
-      tags: [Releases]
-      summary: Tauri updater manifest (latest only)
-      description: |
-        Returns the single latest release. Signature is in minisign
-        envelope format that Tauri's verifier consumes directly.
-        Embeds `minimum_supported_version` + `minimum_supported_message`
-        when the product has them configured.
-      parameters:
-        - $ref: "#/components/parameters/ProductSlug"
-        - $ref: "#/components/parameters/Platform"
-        - $ref: "#/components/parameters/Channel"
-      responses:
-        "200":
-          description: Tauri manifest
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  version:
-                    type: string
-                  pub_date:
-                    type: string
-                    format: date-time
-                  url:
-                    type: string
-                    format: uri
-                  signature:
-                    type: string
-                    description: minisign envelope ("untrusted comment:\n<base64>")
-                  notes:
-                    type: string
-                  minimum_supported_version:
-                    type: string
-                  minimum_supported_message:
-                    type: string
-        "204":
-          description: No published release yet for this channel/platform
-        "400":
-          description: Invalid platform / channel
-        "404":
-          description: Unknown product_slug
 
   /admin/licenses:
     post:

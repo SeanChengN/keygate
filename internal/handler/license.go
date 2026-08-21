@@ -13,6 +13,20 @@ import (
 
 const maxIdentifierLen = 256
 
+type deviceProofRequest struct {
+	DevicePublicKey string `json:"device_public_key"`
+	ProofTimestamp  int64  `json:"proof_timestamp"`
+	ProofNonce      string `json:"proof_nonce"`
+	ProofSignature  string `json:"proof_signature"`
+}
+
+func (p deviceProofRequest) serviceInput() service.DeviceProofInput {
+	return service.DeviceProofInput{
+		PublicKey: p.DevicePublicKey, Timestamp: p.ProofTimestamp,
+		Nonce: p.ProofNonce, Signature: p.ProofSignature,
+	}
+}
+
 type LicenseHandler struct {
 	svc *service.LicenseService
 }
@@ -27,6 +41,8 @@ func (h *LicenseHandler) Activate(c *gin.Context) {
 		Identifier     string `json:"identifier" binding:"required"`
 		IdentifierType string `json:"identifier_type"`
 		Label          string `json:"label"`
+		ProductID      string `json:"product_id"`
+		deviceProofRequest
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "license_key and identifier are required")
@@ -45,7 +61,8 @@ func (h *LicenseHandler) Activate(c *gin.Context) {
 		IdentifierType: req.IdentifierType,
 		Label:          req.Label,
 		IPAddress:      c.ClientIP(),
-		ProductID:      str(productID),
+		ProductID:      firstNonEmpty(str(productID), strings.TrimSpace(req.ProductID)),
+		DeviceProof:    req.deviceProofRequest.serviceInput(),
 	})
 	if err != nil {
 		writeAppErr(c, err)
@@ -58,6 +75,8 @@ func (h *LicenseHandler) Verify(c *gin.Context) {
 	var req struct {
 		LicenseKey string `json:"license_key" binding:"required"`
 		Identifier string `json:"identifier" binding:"required"`
+		ProductID  string `json:"product_id"`
+		deviceProofRequest
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "license_key and identifier are required")
@@ -71,10 +90,11 @@ func (h *LicenseHandler) Verify(c *gin.Context) {
 
 	productID, _ := c.Get("product_id")
 	result, err := h.svc.Verify(c.Request.Context(), service.VerifyInput{
-		LicenseKey: req.LicenseKey,
-		Identifier: req.Identifier,
-		ProductID:  str(productID),
-		IPAddress:  c.ClientIP(),
+		LicenseKey:  req.LicenseKey,
+		Identifier:  req.Identifier,
+		ProductID:   firstNonEmpty(str(productID), strings.TrimSpace(req.ProductID)),
+		IPAddress:   c.ClientIP(),
+		DeviceProof: req.deviceProofRequest.serviceInput(),
 	})
 	if err != nil {
 		writeAppErr(c, err)
@@ -87,6 +107,8 @@ func (h *LicenseHandler) Deactivate(c *gin.Context) {
 	var req struct {
 		LicenseKey string `json:"license_key" binding:"required"`
 		Identifier string `json:"identifier" binding:"required"`
+		ProductID  string `json:"product_id"`
+		deviceProofRequest
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "license_key and identifier are required")
@@ -100,10 +122,11 @@ func (h *LicenseHandler) Deactivate(c *gin.Context) {
 
 	productID, _ := c.Get("product_id")
 	err := h.svc.Deactivate(c.Request.Context(), service.DeactivateInput{
-		LicenseKey: req.LicenseKey,
-		Identifier: req.Identifier,
-		ProductID:  str(productID),
-		IPAddress:  c.ClientIP(),
+		LicenseKey:  req.LicenseKey,
+		Identifier:  req.Identifier,
+		ProductID:   firstNonEmpty(str(productID), strings.TrimSpace(req.ProductID)),
+		IPAddress:   c.ClientIP(),
+		DeviceProof: req.deviceProofRequest.serviceInput(),
 	})
 	if err != nil {
 		writeAppErr(c, err)
@@ -129,6 +152,15 @@ func writeAppErr(c *gin.Context, err error) {
 func str(v any) string {
 	if s, ok := v.(string); ok {
 		return s
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
 	}
 	return ""
 }

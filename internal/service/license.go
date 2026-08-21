@@ -60,7 +60,8 @@ type ActivateInput struct {
 	// rejects licenses that don't belong to it. Public SDK endpoints
 	// pass empty (license_key alone identifies tenant); server-to-server
 	// integrations may pass the product ID for explicit verification.
-	ProductID string
+	ProductID   string
+	DeviceProof DeviceProofInput
 }
 
 type ActivateResult struct {
@@ -112,11 +113,23 @@ func (s *LicenseService) Activate(ctx context.Context, in ActivateInput) (*Activ
 	if err := s.assertUsable(lic); err != nil {
 		return nil, err
 	}
+	if !in.DeviceProof.provided() {
+		return nil, licenseNotFound()
+	}
 
 	if existing, err := s.store.FindActivation(ctx, lic.ID, in.Identifier); err == nil {
+		if existing.DevicePublicKey != "" {
+			if err := validateDeviceProof(ctx, s.store, in.DeviceProof, "activate", in.LicenseKey,
+				in.Identifier, lic.ProductID, "", "", "", existing.DevicePublicKey); err != nil {
+				return nil, err
+			}
+		} else if in.DeviceProof.provided() {
+			return nil, apperr.Conflict("DEVICE_REENROLL_REQUIRED",
+				"legacy activation must be removed or approved before binding a device key")
+		}
 		_ = s.store.TouchActivation(ctx, existing.ID)
 		middleware.LicenseActivations.WithLabelValues(lic.ProductID, "already_activated").Inc()
-		token, err := s.signToken(lic, in.Identifier)
+		token, err := s.signToken(lic, in.Identifier, existing.DevicePublicKey)
 		if err != nil {
 			return nil, apperr.Internal(err)
 		}
@@ -128,10 +141,18 @@ func (s *LicenseService) Activate(ctx context.Context, in ActivateInput) (*Activ
 	}
 
 	max := s.maxActivations(lic)
+	devicePublicKey := ""
+	if in.DeviceProof.provided() {
+		if err := validateDeviceProof(ctx, s.store, in.DeviceProof, "activate", in.LicenseKey,
+			in.Identifier, lic.ProductID, "", "", "", ""); err != nil {
+			return nil, err
+		}
+		devicePublicKey = in.DeviceProof.PublicKey
+	}
 	act := &model.Activation{
 		LicenseID: lic.ID, Identifier: in.Identifier,
 		IdentifierType: in.IdentifierType, Label: in.Label,
-		IPAddress: in.IPAddress,
+		IPAddress: in.IPAddress, DevicePublicKey: devicePublicKey,
 	}
 	if err := s.store.ActivateWithinLimit(ctx, act, max); err != nil {
 		if err.Error() == "activation limit reached" {
@@ -167,7 +188,7 @@ func (s *LicenseService) Activate(ctx context.Context, in ActivateInput) (*Activ
 		})
 	}
 
-	token, err := s.signToken(lic, in.Identifier)
+	token, err := s.signToken(lic, in.Identifier, devicePublicKey)
 	if err != nil {
 		return nil, apperr.Internal(err)
 	}
@@ -182,10 +203,11 @@ func (s *LicenseService) Activate(ctx context.Context, in ActivateInput) (*Activ
 // ─── Verify ───
 
 type VerifyInput struct {
-	LicenseKey string
-	Identifier string
-	ProductID  string
-	IPAddress  string
+	LicenseKey  string
+	Identifier  string
+	ProductID   string
+	IPAddress   string
+	DeviceProof DeviceProofInput
 }
 
 type VerifyResult struct {
@@ -253,6 +275,9 @@ func (s *LicenseService) Verify(ctx context.Context, in VerifyInput) (*VerifyRes
 		middleware.LicenseVerifications.WithLabelValues(lic.ProductID, "unusable").Inc()
 		return nil, licenseNotFound()
 	}
+	if !in.DeviceProof.provided() {
+		return nil, licenseNotFound()
+	}
 
 	act, err := s.store.FindActivation(ctx, lic.ID, in.Identifier)
 	if err != nil {
@@ -261,6 +286,13 @@ func (s *LicenseService) Verify(ctx context.Context, in VerifyInput) (*VerifyRes
 		// such license". Otherwise this is the loudest existence
 		// oracle: 403 NOT_ACTIVATED tells the attacker a key is real.
 		return nil, licenseNotFound()
+	}
+	if act.DevicePublicKey == "" {
+		return nil, licenseNotFound()
+	}
+	if err := validateDeviceProof(ctx, s.store, in.DeviceProof, "verify", in.LicenseKey,
+		in.Identifier, lic.ProductID, "", "", "", act.DevicePublicKey); err != nil {
+		return nil, err
 	}
 	_ = s.store.TouchActivation(ctx, act.ID)
 
@@ -284,7 +316,7 @@ func (s *LicenseService) Verify(ctx context.Context, in VerifyInput) (*VerifyRes
 	// the verification envelope so clients can compare the signed and unsigned
 	// representations without false mismatches from database microseconds.
 	issuedAt := time.Now().UTC().Truncate(time.Second)
-	token, err := s.signTokenAt(lic, in.Identifier, issuedAt)
+	token, err := s.signTokenAt(lic, in.Identifier, issuedAt, act.DevicePublicKey)
 	if err != nil {
 		return nil, apperr.Internal(err)
 	}
@@ -315,10 +347,11 @@ func (s *LicenseService) Verify(ctx context.Context, in VerifyInput) (*VerifyRes
 // ─── Deactivate ───
 
 type DeactivateInput struct {
-	LicenseKey string
-	Identifier string
-	ProductID  string
-	IPAddress  string
+	LicenseKey  string
+	Identifier  string
+	ProductID   string
+	IPAddress   string
+	DeviceProof DeviceProofInput
 }
 
 func (s *LicenseService) Deactivate(ctx context.Context, in DeactivateInput) error {
@@ -351,6 +384,9 @@ func (s *LicenseService) Deactivate(ctx context.Context, in DeactivateInput) err
 	if err := requireProductCapability(lic.Product, model.CapActivations, "device deactivation"); err != nil {
 		return err
 	}
+	if !in.DeviceProof.provided() {
+		return licenseNotFound()
+	}
 
 	act, err := s.store.FindActivation(ctx, lic.ID, in.Identifier)
 	if err != nil {
@@ -358,6 +394,13 @@ func (s *LicenseService) Deactivate(ctx context.Context, in DeactivateInput) err
 		// can't be used to probe for real keys ("oh, this key returned
 		// ACTIVATION_NOT_FOUND, that's specific — must exist").
 		return licenseNotFound()
+	}
+	if act.DevicePublicKey == "" {
+		return licenseNotFound()
+	}
+	if err := validateDeviceProof(ctx, s.store, in.DeviceProof, "deactivate", in.LicenseKey,
+		in.Identifier, lic.ProductID, "", "", "", act.DevicePublicKey); err != nil {
+		return err
 	}
 
 	if err := s.store.DeleteActivation(ctx, act.ID); err != nil {
@@ -527,19 +570,23 @@ func responseMeta() map[string]any {
 	return map[string]any{"server": branding.Project, "url": branding.URL}
 }
 
-func (s *LicenseService) signToken(lic *model.License, identifier string) (string, error) {
-	return s.signTokenAt(lic, identifier, time.Now())
+func (s *LicenseService) signToken(lic *model.License, identifier, devicePublicKey string) (string, error) {
+	return s.signTokenAt(lic, identifier, time.Now(), devicePublicKey)
 }
 
-func (s *LicenseService) signTokenAt(lic *model.License, identifier string, now time.Time) (string, error) {
+func (s *LicenseService) signTokenAt(lic *model.License, identifier string, now time.Time, devicePublicKey string) (string, error) {
 	planName := ""
 	licenseType := ""
 	if lic.Plan != nil {
 		planName = lic.Plan.Name
 		licenseType = lic.Plan.LicenseType
 	}
+	fingerprint, err := license.DevicePublicKeyFingerprint(devicePublicKey)
+	if err != nil {
+		return "", err
+	}
 	t := &license.VerifyToken{
-		Version:     2,
+		Version:     3,
 		LicenseID:   lic.ID,
 		ProductID:   lic.ProductID,
 		PlanID:      lic.PlanID,
@@ -551,7 +598,7 @@ func (s *LicenseService) signTokenAt(lic *model.License, identifier string, now 
 		IssuedAt:    now.Unix(),
 		ExpiresAt:   now.Add(7 * 24 * time.Hour).Unix(),
 		GraceDays:   s.graceDays(lic),
-		Fingerprint: license.Fingerprint(identifier, lic.ProductID),
+		Fingerprint: fingerprint,
 	}
 	if lic.ValidUntil != nil && licenseType != "perpetual" {
 		validUntil := lic.ValidUntil.Unix()

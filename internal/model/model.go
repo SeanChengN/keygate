@@ -353,14 +353,15 @@ const (
 type Activation struct {
 	bun.BaseModel `bun:"table:activations"`
 
-	ID             string    `bun:",pk" json:"id"`
-	LicenseID      string    `bun:",notnull" json:"license_id"`
-	Identifier     string    `bun:",notnull" json:"identifier"`
-	IdentifierType string    `bun:",notnull" json:"identifier_type"`
-	Label          string    `json:"label,omitempty"`
-	IPAddress      string    `json:"ip_address,omitempty"`
-	LastVerified   time.Time `bun:",nullzero,default:now()" json:"last_verified"`
-	CreatedAt      time.Time `bun:",nullzero,default:now()" json:"created_at"`
+	ID              string    `bun:",pk" json:"id"`
+	LicenseID       string    `bun:",notnull" json:"license_id"`
+	Identifier      string    `bun:",notnull" json:"identifier"`
+	IdentifierType  string    `bun:",notnull" json:"identifier_type"`
+	Label           string    `json:"label,omitempty"`
+	IPAddress       string    `json:"ip_address,omitempty"`
+	DevicePublicKey string    `bun:",notnull,default:''" json:"-"`
+	LastVerified    time.Time `bun:",nullzero,default:now()" json:"last_verified"`
+	CreatedAt       time.Time `bun:",nullzero,default:now()" json:"created_at"`
 
 	License *License `bun:"rel:belongs-to,join:license_id=id" json:"license,omitempty"`
 }

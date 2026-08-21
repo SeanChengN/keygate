@@ -128,11 +128,13 @@ type FinalizeArtifactInput struct {
 
 // DownloadInput is the license-gated download request.
 type DownloadInput struct {
-	LicenseKey string
-	ProductID  string
-	Version    string // empty = latest in channel
-	Platform   string
-	Channel    string
+	LicenseKey  string
+	ProductID   string
+	Identifier  string
+	Version     string // empty = latest in channel
+	Platform    string
+	Channel     string
+	DeviceProof DeviceProofInput
 }
 
 // DownloadResult is what's returned to the client on successful authz.
@@ -681,6 +683,14 @@ func (s *ReleaseService) GenerateDownload(ctx context.Context, in DownloadInput)
 	lic, err := loadLicenseForSDK(ctx, s.store, in.LicenseKey, in.ProductID, model.CapReleases, true)
 	if err != nil {
 		return nil, err
+	}
+	activation, activationErr := s.store.FindBoundActivation(ctx, lic.ID, in.Identifier)
+	if activationErr != nil {
+		return nil, licenseNotFound()
+	}
+	if proofErr := validateDeviceProof(ctx, s.store, in.DeviceProof, "download", in.LicenseKey,
+		in.Identifier, lic.ProductID, in.Platform, in.Channel, in.Version, activation.DevicePublicKey); proofErr != nil {
+		return nil, proofErr
 	}
 
 	var rel *model.Release

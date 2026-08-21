@@ -754,6 +754,30 @@ func (s *Store) TouchActivation(ctx context.Context, id string) error {
 	return err
 }
 
+func (s *Store) FindBoundActivation(ctx context.Context, licenseID, identifier string) (*model.Activation, error) {
+	a := new(model.Activation)
+	return a, s.DB.NewSelect().Model(a).
+		Where("license_id = ? AND identifier = ? AND device_public_key <> ''", licenseID, identifier).Scan(ctx)
+}
+
+func (s *Store) HasBoundActivation(ctx context.Context, licenseID string) (bool, error) {
+	return s.DB.NewSelect().Model((*model.Activation)(nil)).
+		Where("license_id = ? AND device_public_key <> ''", licenseID).Exists(ctx)
+}
+
+func (s *Store) ConsumeDeviceProofNonce(ctx context.Context, digest string, expiresAt time.Time) (bool, error) {
+	_, _ = s.DB.NewDelete().Table("device_proof_nonces").Where("expires_at < now()").Exec(ctx)
+	result, err := s.DB.NewRaw(
+		"INSERT INTO device_proof_nonces (digest, expires_at) VALUES (?, ?) ON CONFLICT (digest) DO NOTHING",
+		digest, expiresAt,
+	).Exec(ctx)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows == 1, err
+}
+
 func (s *Store) DeleteActivation(ctx context.Context, id string) error {
 	_, err := s.DB.NewDelete().Model((*model.Activation)(nil)).Where("id = ?", id).Exec(ctx)
 	return err

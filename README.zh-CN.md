@@ -58,7 +58,7 @@
 
 ### 🚀 软件分发
 
-向已安装客户端推送签名更新。**Sparkle**（macOS）、**Velopack**（Windows）和 **Tauri**（跨平台）的自动更新器消费同一份 release 数据 — 一次发布，所有更新器兼容。每个 release 下挂多平台二进制，**原子发布门控**（绝不泄露半上传状态），**yank** 即时回滚。每产品 **Ed25519 签名密钥**，私钥用 AES-256-GCM + HKDF 派生子密钥落盘加密。服务端算 SHA-256（不信客户端哈希）。stable channel 公开访问 — 客户的自动更新器在 license 轮换时绝不中断。每产品 `minimum_supported_version` 强制升级下限。
+通过授权门禁和设备证明绑定的下载接口向已安装客户端推送签名更新。每个 release 下挂多平台二进制，使用**原子发布门控**避免泄露半上传状态，并支持 **yank** 即时回滚。每产品 **Ed25519 签名密钥**使用 AES-256-GCM 与 HKDF 派生子密钥加密落盘，服务端独立计算 SHA-256。系统不注册公开 Sparkle、Velopack 或 Tauri feed；每次制品下载都必须提交有效授权和新的设备证明。每产品仍可设置 `minimum_supported_version` 强制升级下限。
 
 对象存储兼容 S3 — Cloudflare R2、AWS S3、MinIO 等任何说 SigV4 的存储。Presigned URL 浏览器直传（不经 Keygate 中转），license 校验后短期下载 URL。
 
