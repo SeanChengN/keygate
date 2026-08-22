@@ -274,6 +274,10 @@ const zh = {
   "licenses.activations": "激活记录",
   "licenses.revoke": "吊销",
   "licenses.revokeConfirm": "此操作将永久吊销许可证。客户将立即失去访问权限，且无法撤销。",
+  "licenses.deletePermanently": "永久删除",
+  "licenses.deleteConfirm":
+    "此操作会永久删除已吊销的许可证及其订阅、激活、席位、用量、浮动会话和附加项；审计历史仍会保留。删除后无法恢复。",
+  "licenses.deleteConfirmLabel": "输入 DELETE 以确认",
   "licenses.suspend": "暂停",
   "licenses.suspendConfirm": "此操作将暂停许可证。客户将无法激活或使用软件，直到恢复。",
   "licenses.reinstate": "恢复",
@@ -786,6 +790,7 @@ const zh = {
   "toast.planCreated": "方案创建成功。",
   "toast.planDeleted": "方案已删除。",
   "toast.licenseCreated": "许可证签发成功。",
+  "toast.licenseDeleted": "许可证已永久删除。",
   "toast.apiKeyCreated": "API 密钥创建成功。",
   "toast.addonCreated": "附加组件创建成功。",
   "toast.webhookCreated": "Webhook 创建成功。",

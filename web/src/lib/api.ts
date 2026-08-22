@@ -215,6 +215,7 @@ export const admin = {
   setLicenseValidUntil: (id: string, validUntil: string) =>
     post<License>(`/admin/licenses/${id}/valid-until`, { valid_until: validUntil }),
   revokeLicense: (id: string) => post(`/admin/licenses/${id}/revoke`),
+  deleteLicense: (id: string) => del<void>(`/admin/licenses/${id}`),
   suspendLicense: (id: string) => post(`/admin/licenses/${id}/suspend`),
   reinstateLicense: (id: string) => post(`/admin/licenses/${id}/reinstate`),
   refundLicense: (id: string) => post(`/admin/licenses/${id}/refund`),

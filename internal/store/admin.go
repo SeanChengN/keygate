@@ -5,10 +5,18 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/tabloy/keygate/internal/model"
+)
+
+var (
+	ErrLicenseNotFound      = errors.New("license not found")
+	ErrLicenseNotRevoked    = errors.New("license must be revoked before deletion")
+	ErrLicensePaymentLinked = errors.New("license is linked to a payment provider")
 )
 
 // ─── Product ───
@@ -251,6 +259,80 @@ func (s *Store) RevokeLicense(ctx context.Context, id string) error {
 	return nil
 }
 
+// DeleteRevokedUnpaidLicense permanently removes a revoked license and all
+// rows that reference it through ON DELETE CASCADE. The parent license and
+// every existing subscription are locked until commit so a payment linkage
+// cannot be added between validation and deletion. The audit tombstone is
+// inserted in the same transaction and deliberately excludes license keys.
+func (s *Store) DeleteRevokedUnpaidLicense(ctx context.Context, id, actorID, ipAddress string) (*model.License, error) {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	deleted := new(model.License)
+	if err := tx.NewRaw(`
+		SELECT id, product_id, plan_id, COALESCE(customer_id, '') AS customer_id, email,
+		       COALESCE(payment_provider, '') AS payment_provider,
+		       COALESCE(stripe_subscription_id, '') AS stripe_subscription_id, status
+		FROM licenses
+		WHERE id = ?
+		FOR UPDATE
+	`, id).Scan(ctx, deleted); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrLicenseNotFound
+		}
+		return nil, err
+	}
+	if deleted.Status != model.StatusRevoked {
+		return nil, ErrLicenseNotRevoked
+	}
+	if strings.TrimSpace(deleted.PaymentProvider) != "" || strings.TrimSpace(deleted.StripeSubscriptionID) != "" {
+		return nil, ErrLicensePaymentLinked
+	}
+
+	var subscriptions []struct {
+		PaymentProvider string `bun:"payment_provider"`
+		ExternalID      string `bun:"external_id"`
+	}
+	if err := tx.NewRaw(`
+		SELECT COALESCE(payment_provider, '') AS payment_provider,
+		       COALESCE(external_id, '') AS external_id
+		FROM subscriptions
+		WHERE license_id = ?
+		FOR UPDATE
+	`, id).Scan(ctx, &subscriptions); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	for _, subscription := range subscriptions {
+		if strings.TrimSpace(subscription.PaymentProvider) != "" || strings.TrimSpace(subscription.ExternalID) != "" {
+			return nil, ErrLicensePaymentLinked
+		}
+	}
+
+	if _, err := tx.NewDelete().Model((*model.License)(nil)).Where("id = ?", id).Exec(ctx); err != nil {
+		return nil, err
+	}
+	audit := &model.AuditLog{
+		ID: newID(), Entity: "license", EntityID: deleted.ID, Action: "deleted",
+		ActorType: "admin", ActorID: actorID, IPAddress: ipAddress,
+		Changes: map[string]any{
+			"product_id":  deleted.ProductID,
+			"plan_id":     deleted.PlanID,
+			"customer_id": deleted.CustomerID,
+			"email":       deleted.Email,
+		},
+	}
+	if _, err := tx.NewInsert().Model(audit).Exec(ctx); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return deleted, nil
+}
+
 func (s *Store) SuspendLicense(ctx context.Context, id string) error {
 	now := time.Now()
 	res, err := s.DB.NewUpdate().Model((*model.License)(nil)).
@@ -318,14 +400,15 @@ func (s *Store) ListAuditLogs(ctx context.Context, entity, entityID, productID s
 	}
 	if productID != "" {
 		q = q.Where(`(
-            (entity = 'product' AND entity_id = ?)
-         OR entity_id IN (SELECT id FROM licenses  WHERE product_id = ?)
-         OR entity_id IN (SELECT id FROM plans     WHERE product_id = ?)
+	            (entity = 'product' AND entity_id = ?)
+	         OR entity_id IN (SELECT id FROM licenses  WHERE product_id = ?)
+	         OR (entity = 'license' AND action = 'deleted' AND changes->>'product_id' = ?)
+	         OR entity_id IN (SELECT id FROM plans     WHERE product_id = ?)
          OR entity_id IN (SELECT id FROM addons    WHERE product_id = ?)
          OR entity_id IN (SELECT id FROM webhooks  WHERE product_id = ?)
          OR entity_id IN (SELECT id FROM releases  WHERE product_id = ?)
          OR entity_id IN (SELECT id FROM api_keys  WHERE product_id = ?)
-        )`, productID, productID, productID, productID, productID, productID, productID)
+	        )`, productID, productID, productID, productID, productID, productID, productID, productID)
 	}
 	total, err := q.Count(ctx)
 	if err != nil {

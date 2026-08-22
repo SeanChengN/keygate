@@ -772,6 +772,30 @@ paths:
         "404": {description: Product, plan, or customer not found}
         "409": {description: Customer is archived}
 
+  /admin/licenses/{id}:
+    delete:
+      tags: [Admin]
+      summary: Permanently delete a revoked unpaid license
+      description: |
+        Permanently deletes a revoked license and all license-owned data that
+        is protected by cascade foreign keys, including subscriptions,
+        activations, seats, usage, floating sessions, and add-ons. The
+        deletion audit tombstone is retained and never contains the license
+        key. Licenses linked to a payment provider or external subscription
+        cannot be deleted. This operation requires the admin scope;
+        licenses:write API keys are not accepted.
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "204": {description: License permanently deleted}
+        "404": {description: LICENSE_NOT_FOUND}
+        "409":
+          description: LICENSE_NOT_REVOKED or LICENSE_PAYMENT_LINKED
+
   /admin/licenses/{id}/valid-until:
     post:
       tags: [Admin]

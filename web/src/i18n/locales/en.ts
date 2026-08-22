@@ -288,6 +288,10 @@ const en = {
   "licenses.revoke": "Revoke",
   "licenses.revokeConfirm":
     "This will permanently revoke the license. The customer will lose access immediately. This cannot be undone.",
+  "licenses.deletePermanently": "Delete permanently",
+  "licenses.deleteConfirm":
+    "This permanently deletes the revoked license and its subscriptions, activations, seats, usage, floating sessions, and add-ons. Audit history is retained. This cannot be undone.",
+  "licenses.deleteConfirmLabel": "Type DELETE to confirm",
   "licenses.suspend": "Suspend",
   "licenses.suspendConfirm":
     "This will suspend the license. The customer will not be able to activate or use the software until reinstated.",
@@ -808,6 +812,7 @@ const en = {
   "toast.planCreated": "Plan created successfully.",
   "toast.planDeleted": "Plan deleted.",
   "toast.licenseCreated": "License issued successfully.",
+  "toast.licenseDeleted": "License permanently deleted.",
   "toast.apiKeyCreated": "API key created successfully.",
   "toast.addonCreated": "Addon created successfully.",
   "toast.webhookCreated": "Webhook created successfully.",

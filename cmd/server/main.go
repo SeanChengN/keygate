@@ -829,6 +829,11 @@ func main() {
 
 		licWrite.DELETE("/activations/:id", adminH.DeleteActivation)
 
+		// Permanent license deletion is intentionally admin-only. A merchant
+		// provisioning key with licenses:write may revoke, but cannot erase
+		// license, billing, usage, or audit-linked history.
+		admin.DELETE("/licenses/:id", adminH.DeleteLicense)
+
 		admin.GET("/api-keys", adminH.ListAPIKeys)
 		admin.POST("/api-keys", adminH.CreateAPIKey)
 		admin.POST("/api-keys/:id/rotate", adminH.RotateAPIKey)

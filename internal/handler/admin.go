@@ -1050,6 +1050,22 @@ func (h *AdminHandler) RevokeLicense(c *gin.Context) {
 	response.OK(c, gin.H{"status": "revoked"})
 }
 
+func (h *AdminHandler) DeleteLicense(c *gin.Context) {
+	_, err := h.Store.DeleteRevokedUnpaidLicense(c, c.Param("id"), adminID(c), c.ClientIP())
+	switch {
+	case err == nil:
+		response.NoContent(c)
+	case errors.Is(err, store.ErrLicenseNotFound):
+		response.Err(c, http.StatusNotFound, "LICENSE_NOT_FOUND", "license not found")
+	case errors.Is(err, store.ErrLicenseNotRevoked):
+		response.Err(c, http.StatusConflict, "LICENSE_NOT_REVOKED", "license must be revoked before deletion")
+	case errors.Is(err, store.ErrLicensePaymentLinked):
+		response.Err(c, http.StatusConflict, "LICENSE_PAYMENT_LINKED", "licenses linked to a payment provider cannot be deleted")
+	default:
+		response.Internal(c)
+	}
+}
+
 func (h *AdminHandler) RefundLicense(c *gin.Context) {
 	id := c.Param("id")
 	lic, err := h.Store.FindLicenseByID(c, id)

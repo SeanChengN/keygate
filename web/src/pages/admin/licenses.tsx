@@ -570,6 +570,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const { data: lic, isLoading } = useQuery({ queryKey: ["admin", "license", id], queryFn: () => admin.getLicense(id) })
   const [copied, setCopied] = useState(false)
   const [changingPlan, setChangingPlan] = useState(false)
+  const [deleteConfirmation, setDeleteConfirmation] = useState("")
   // null = not editing; "" = editing with an empty value (perpetual
   // licenses only; subscriptions must always retain a period end).
   const [editingValidUntil, setEditingValidUntil] = useState<string | null>(null)
@@ -591,6 +592,16 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin"] })
     },
+  })
+  const deleteMut = useMutation({
+    mutationFn: () => admin.deleteLicense(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "licenses"] })
+      qc.invalidateQueries({ queryKey: ["admin", "customer"] })
+      showToast(t("toast.licenseDeleted"), "success")
+      onClose()
+    },
+    onError: (error: Error) => showToast(error.message, "error"),
   })
   const suspendMut = useMutation({
     mutationFn: () => admin.suspendLicense(id),
@@ -908,6 +919,48 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                             onClick={() => revokeMut.mutate()}
                           >
                             {t("licenses.revoke")}
+                          </AlertDialogAction>
+                        </div>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  )}
+                  {lic.status === "revoked" && !lic.payment_provider && !lic.stripe_subscription_id && (
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          disabled={deleteMut.isPending}
+                          onClick={() => setDeleteConfirmation("")}
+                        >
+                          <Trash2 className="h-4 w-4 mr-1" /> {t("licenses.deletePermanently")}
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>{t("licenses.deletePermanently")}</AlertDialogTitle>
+                          <AlertDialogDescription>{t("licenses.deleteConfirm")}</AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <div className="space-y-2 mt-2">
+                          <Label htmlFor="license-delete-confirmation">{t("licenses.deleteConfirmLabel")}</Label>
+                          <Input
+                            id="license-delete-confirmation"
+                            value={deleteConfirmation}
+                            onChange={(event) => setDeleteConfirmation(event.target.value)}
+                            placeholder="DELETE"
+                            autoComplete="off"
+                          />
+                        </div>
+                        <div className="flex justify-end gap-2 mt-4">
+                          <AlertDialogCancel onClick={() => setDeleteConfirmation("")}>
+                            {t("common.cancel")}
+                          </AlertDialogCancel>
+                          <AlertDialogAction
+                            className="bg-destructive text-white hover:bg-destructive/90"
+                            disabled={deleteConfirmation !== "DELETE" || deleteMut.isPending}
+                            onClick={() => deleteMut.mutate()}
+                          >
+                            {deleteMut.isPending ? t("common.loading") : t("licenses.deletePermanently")}
                           </AlertDialogAction>
                         </div>
                       </AlertDialogContent>
