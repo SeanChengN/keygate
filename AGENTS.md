@@ -33,3 +33,46 @@ This file keeps only project scope, non-negotiable safety guardrails, and naviga
 2. Preserve existing user changes and avoid unrelated refactors; update related documentation and tests when user-visible behavior, deployment boundaries, or backup flows change.
 3. At minimum, run the tests, audits, Compose configuration checks, Shell syntax checks, and `git diff --check` required by the project guide before delivery.
 4. The final summary should report only the result, key impact, executed validation, and real limitations.
+
+## Hindsight Memory
+
+This project belongs to the `digital-warehousing` memory bank.
+
+Use Hindsight memory for long-term engineering knowledge related to Keygate source maintenance and release management.
+
+Store:
+
+- upstream synchronization decisions
+- source maintenance strategies
+- release and tagging procedures
+- compatibility considerations
+- AGPL/license compliance decisions
+- build and packaging issues
+- image generation and verification lessons
+- failed approaches and their root causes
+- important architectural decisions
+
+Do not store:
+
+- temporary build logs
+- generated binaries or artifacts
+- secrets or credentials
+- vendor deployment details
+- WMS business implementation details
+- one-time debugging output
+
+Before modifying upstream-related code:
+
+1. Search Hindsight for previous compatibility and release decisions.
+2. Check whether similar changes were already rejected and why.
+3. Preserve upstream compatibility unless a deliberate divergence is documented.
+
+When a long-term issue is resolved, record:
+
+- affected component
+- upstream version or commit context
+- problem symptoms
+- root cause
+- solution
+- validation method
+- compatibility impact
