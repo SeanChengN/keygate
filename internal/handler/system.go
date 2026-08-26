@@ -40,7 +40,7 @@ type updateInfo struct {
 func NewSystemHandler(s *store.Store) *SystemHandler {
 	return &SystemHandler{
 		Store:     s,
-		RepoOwner: "tabloy",
+		RepoOwner: "SeanChengN",
 		RepoName:  "keygate",
 	}
 }
@@ -156,7 +156,7 @@ func (h *SystemHandler) fetchLatestRelease() *updateInfo {
 	info.ReleaseDate = release.PublishedAt
 	info.Changelog = release.Body
 	info.Available = semverNewer(stripV(release.TagName), stripV(version.Version))
-	info.UpdateCommand = "docker pull ghcr.io/" + h.RepoOwner + "/" + h.RepoName + ":" + stripV(release.TagName)
+	info.UpdateCommand = "docker pull ghcr.io/" + strings.ToLower(h.RepoOwner) + "/" + strings.ToLower(h.RepoName) + ":" + stripV(release.TagName)
 
 	return info
 }
@@ -168,22 +168,25 @@ func semverNewer(latest, current string) bool {
 	}
 	lp := parseSemver(latest)
 	cp := parseSemver(current)
-	if lp[0] != cp[0] {
-		return lp[0] > cp[0]
+	for i := range lp {
+		if lp[i] != cp[i] {
+			return lp[i] > cp[i]
+		}
 	}
-	if lp[1] != cp[1] {
-		return lp[1] > cp[1]
-	}
-	return lp[2] > cp[2]
+	return false
 }
 
-func parseSemver(v string) [3]int {
-	parts := strings.SplitN(v, ".", 3)
-	var result [3]int
+func parseSemver(v string) [4]int {
+	coreAndSuffix := strings.SplitN(v, "-", 2)
+	parts := strings.SplitN(coreAndSuffix[0], ".", 3)
+	var result [4]int
 	for i := 0; i < 3 && i < len(parts); i++ {
 		// Strip pre-release suffix (e.g. "1-beta" → "1")
-		num := strings.SplitN(parts[i], "-", 2)[0]
+		num := parts[i]
 		result[i], _ = strconv.Atoi(num)
+	}
+	if len(coreAndSuffix) == 2 && strings.HasPrefix(coreAndSuffix[1], "dw.") {
+		result[3], _ = strconv.Atoi(strings.TrimPrefix(coreAndSuffix[1], "dw."))
 	}
 	return result
 }

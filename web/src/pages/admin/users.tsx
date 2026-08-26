@@ -275,7 +275,7 @@ function CustomerDetailDialog({
                         </DataTableCell>
                         <DataTableCell>
                           <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">
-                            {l.license_key.length > 16 ? `${l.license_key.slice(0, 16)}...` : l.license_key}
+                            {detail.license_key_hints?.[l.id] ? `KG-****-${detail.license_key_hints[l.id]}` : "****"}
                           </code>
                         </DataTableCell>
                         <DataTableCell className="text-xs text-muted-foreground">

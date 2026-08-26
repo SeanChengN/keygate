@@ -501,7 +501,9 @@ func main() {
 	auth := v1.Group("/auth", middleware.RateLimitByIP(cfg.RateLimitAuth, time.Minute))
 	{
 		auth.GET("/providers", authH.Providers)
-		auth.POST("/otp/send", authH.OTPSend)
+		auth.POST("/otp/send",
+			middleware.RateLimitByIPScoped("otp_send", cfg.RateLimitOTPSend, time.Hour),
+			authH.OTPSend)
 		auth.POST("/otp/verify", authH.OTPVerify)
 		auth.POST("/dev-login", authH.DevLogin)
 		auth.POST("/logout", middleware.SessionAuth(cfg.JWTSecret, db.FindUserIsAdmin), authH.Logout)
@@ -535,7 +537,19 @@ func main() {
 				response.Internal(c)
 				return
 			}
-			response.OK(c, gin.H{"licenses": licenses})
+			type portalLicense struct {
+				*model.License
+				LicenseKey string `json:"license_key"`
+			}
+			out := make([]portalLicense, 0, len(licenses))
+			for _, l := range licenses {
+				out = append(out, portalLicense{
+					License:    l,
+					LicenseKey: db.DecryptLicenseKey(l),
+				})
+			}
+			c.Header("Cache-Control", "no-store")
+			response.OK(c, gin.H{"licenses": out})
 		})
 		portal.PUT("/profile", func(c *gin.Context) {
 			userID, _ := c.Get("user_id")
@@ -832,6 +846,7 @@ func main() {
 		// Permanent license deletion is intentionally admin-only. A merchant
 		// provisioning key with licenses:write may revoke, but cannot erase
 		// license, billing, usage, or audit-linked history.
+		admin.GET("/licenses/:id/key", adminH.RevealLicenseKey)
 		admin.DELETE("/licenses/:id", adminH.DeleteLicense)
 
 		admin.GET("/api-keys", adminH.ListAPIKeys)
@@ -854,6 +869,7 @@ func main() {
 		admin.DELETE("/addons/:id", adminH.DeleteAddon)
 
 		admin.GET("/settings", adminH.GetSettings)
+		admin.DELETE("/settings/secrets/:key", adminH.ClearSecretSetting)
 		admin.PUT("/settings", adminH.UpdateSettings)
 		admin.POST("/settings/test-email", adminH.SendTestEmail)
 		admin.POST("/system/run-expiry-checks", adminH.RunExpiryChecks)

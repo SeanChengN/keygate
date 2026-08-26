@@ -334,10 +334,10 @@ func (s *LicenseService) Verify(ctx context.Context, in VerifyInput) (*VerifyRes
 		LicenseType:         licenseType,
 		BillingInterval:     billingInterval,
 		ValidUntil:          validUntil,
-		LeaseExpiresAt:      issuedAt.Add(7 * 24 * time.Hour),
+		LeaseExpiresAt:      s.tokenExpiresAt(lic, issuedAt),
 		Features:            s.entitlements(lic),
 		Token:               token,
-		GraceDays:           s.graceDays(lic),
+		GraceDays:           s.effectiveGraceDays(lic),
 		Meta:                responseMeta(),
 		ExternalCustomerID:  lic.ExternalCustomerID,
 		ExternalWorkspaceID: lic.ExternalWorkspaceID,
@@ -514,7 +514,7 @@ func (s *LicenseService) assertUsable(lic *model.License) error {
 	switch lic.Status {
 	case model.StatusActive, model.StatusTrialing, model.StatusPastDue:
 		if lic.ValidUntil != nil && now.After(*lic.ValidUntil) {
-			grace := time.Duration(s.graceDays(lic)) * 24 * time.Hour
+			grace := time.Duration(s.effectiveGraceDays(lic)) * 24 * time.Hour
 			if now.After(lic.ValidUntil.Add(grace)) {
 				return apperr.New(403, "LICENSE_EXPIRED", "license has expired")
 			}
@@ -548,6 +548,33 @@ func (s *LicenseService) graceDays(lic *model.License) int {
 		return lic.Plan.GraceDays
 	}
 	return 7
+}
+
+const tokenTTL = 7 * 24 * time.Hour
+
+// effectiveGraceDays is the grace period the current lifecycle state
+// actually receives. Canceled and other inactive licenses stop at
+// valid_until and must not advertise the plan's grace period.
+func (s *LicenseService) effectiveGraceDays(lic *model.License) int {
+	switch lic.Status {
+	case model.StatusActive, model.StatusTrialing, model.StatusPastDue:
+		return s.graceDays(lic)
+	default:
+		return 0
+	}
+}
+
+// tokenExpiresAt keeps the offline lease inside both the seven-day
+// check-in interval and the license deadline plus effective grace.
+func (s *LicenseService) tokenExpiresAt(lic *model.License, issuedAt time.Time) time.Time {
+	expiresAt := issuedAt.Add(tokenTTL)
+	if lic.ValidUntil != nil {
+		deadline := lic.ValidUntil.Add(time.Duration(s.effectiveGraceDays(lic)) * 24 * time.Hour)
+		if deadline.Before(expiresAt) {
+			expiresAt = deadline
+		}
+	}
+	return expiresAt
 }
 
 func (s *LicenseService) entitlements(lic *model.License) map[string]any {
@@ -596,11 +623,11 @@ func (s *LicenseService) signTokenAt(lic *model.License, identifier string, now 
 		Identifier:  identifier,
 		Features:    s.entitlements(lic),
 		IssuedAt:    now.Unix(),
-		ExpiresAt:   now.Add(7 * 24 * time.Hour).Unix(),
-		GraceDays:   s.graceDays(lic),
+		ExpiresAt:   s.tokenExpiresAt(lic, now).Unix(),
+		GraceDays:   s.effectiveGraceDays(lic),
 		Fingerprint: fingerprint,
 	}
-	if lic.ValidUntil != nil && licenseType != "perpetual" {
+	if lic.ValidUntil != nil {
 		validUntil := lic.ValidUntil.Unix()
 		t.ValidUntil = &validUntil
 	}

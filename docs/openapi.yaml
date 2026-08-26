@@ -739,6 +739,18 @@ paths:
           description: Storage not configured on this server
 
   /admin/licenses:
+    get:
+      tags: [Admin]
+      summary: List licenses with redacted keys
+      description: |
+        Returns licenses without plaintext activation credentials. The
+        top-level `license_key_hints` map contains only the last four
+        characters, keyed by license id.
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      responses:
+        "200":
+          description: License list and last-four key hints
+
     post:
       tags: [Admin]
       summary: Issue a license
@@ -767,12 +779,24 @@ paths:
                   type: string
                   description: Optional future YYYY-MM-DD date or RFC 3339 timestamp. The server normalizes it to 23:59:59 in the configured system timezone.
       responses:
-        "201": {description: License and any subscription record created}
+        "201":
+          description: License and any subscription record created; the full key is returned only in this response and must not be cached
         "400": {description: Invalid request, plan mismatch, or non-future expiry}
         "404": {description: Product, plan, or customer not found}
         "409": {description: Customer is archived}
 
   /admin/licenses/{id}:
+    get:
+      tags: [Admin]
+      summary: Get a license with a redacted key
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        "200":
+          description: License detail with `license_key_hint`, never the full key
+        "404": {description: License not found}
+
     delete:
       tags: [Admin]
       summary: Permanently delete a revoked unpaid license
@@ -796,7 +820,25 @@ paths:
         "409":
           description: LICENSE_NOT_REVOKED or LICENSE_PAYMENT_LINKED
 
+  /admin/licenses/{id}/key:
+    get:
+      tags: [Admin]
+      summary: Reveal one license key
+      description: |
+        Returns one plaintext license key to a background administrator.
+        This route does not accept a licenses:write API key, records a
+        `key_revealed` audit event without the key, and responds with
+        `Cache-Control: no-store`.
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        "200": {description: Plaintext key for this license}
+        "404": {description: License not found}
+        "503": {description: Stored license key cannot be decrypted}
+
   /admin/licenses/{id}/valid-until:
+
     post:
       tags: [Admin]
       summary: Set or clear a license expiry
@@ -964,10 +1006,60 @@ paths:
         "200": {description: Association changed}
         "409": {description: Customer is archived}
 
+  /admin/settings:
+    get:
+      tags: [Admin]
+      summary: Read safe dashboard settings
+      description: |
+        SMTP passwords and Stripe server-owned fields are omitted.
+        `secrets_set.smtp_password` indicates whether an SMTP password
+        is stored without returning it.
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      responses:
+        "200": {description: Safe settings and secret-presence flags}
+    put:
+      tags: [Admin]
+      summary: Update dashboard-owned settings
+      description: |
+        Only submitted dashboard-owned fields are changed. An empty
+        `smtp_password` preserves the stored password; clearing it
+        requires the dedicated DELETE operation.
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [settings]
+              properties:
+                settings:
+                  type: object
+                  additionalProperties: {type: string}
+      responses:
+        "200": {description: Settings saved}
+        "400": {description: Unknown setting or invalid timezone}
+
+  /admin/settings/secrets/{key}:
+    delete:
+      tags: [Admin]
+      summary: Clear a dashboard-owned secret
+      description: |
+        Explicitly clears a supported secret setting. Currently only
+        `smtp_password` is accepted; Stripe server-owned credentials
+        cannot be cleared through this endpoint.
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      parameters:
+        - {name: key, in: path, required: true, schema: {type: string, enum: [smtp_password]}}
+      responses:
+        "200": {description: Secret cleared}
+        "404": {description: Unsupported secret key}
+
 components:
   parameters:
     ProductSlug:
       in: path
+
       name: product_slug
       required: true
       schema: { type: string }

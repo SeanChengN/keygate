@@ -3,6 +3,7 @@ package license
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"testing"
 )
 
@@ -296,5 +297,27 @@ func TestFingerprint(t *testing.T) {
 
 	if len(fp1) != 16 {
 		t.Errorf("fingerprint should be 16 hex chars (8 bytes), got %d", len(fp1))
+	}
+}
+
+func TestVerifyTokenWireUsesVLDNotVUN(t *testing.T) {
+	validUntil := int64(1702592000)
+	raw, err := json.Marshal(&VerifyToken{
+		Version:    3,
+		LicenseID:  "lic",
+		ValidUntil: &validUntil,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := wire["vld"]; !ok {
+		t.Fatalf("vld missing from v3 token: %s", raw)
+	}
+	if _, ok := wire["vun"]; ok {
+		t.Fatalf("incompatible vun field present in v3 token: %s", raw)
 	}
 }

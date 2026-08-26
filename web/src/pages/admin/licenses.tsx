@@ -52,6 +52,12 @@ function systemDateValue(iso: string, timezone: string): string {
   return `${values.year}-${values.month}-${values.day}`
 }
 
+// Rows show only the tail of a key. The full value never rides in a
+// list or detail payload — it is fetched per reveal and audited.
+function maskKey(hint?: string) {
+  return hint ? `KG-••••-${hint}` : "••••"
+}
+
 export default function LicensesPage() {
   const { t } = useI18n()
   const qc = useQueryClient()
@@ -240,7 +246,9 @@ export default function LicensesPage() {
                         {lic.customer?.name || t("customers.unassigned")}
                       </DataTableCell>
                       <DataTableCell>
-                        <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{lic.license_key}</code>
+                        <code className="text-xs bg-muted px-1.5 py-0.5 rounded">
+                          {maskKey(data?.license_key_hints?.[lic.id])}
+                        </code>
                       </DataTableCell>
                       <DataTableCell className="text-muted-foreground">{lic.product?.name || "-"}</DataTableCell>
                       <DataTableCell className="text-muted-foreground">{lic.plan?.name || "-"}</DataTableCell>
@@ -567,7 +575,10 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const { t } = useI18n()
   const { timezone } = useSiteConfig()
   const qc = useQueryClient()
-  const { data: lic, isLoading } = useQuery({ queryKey: ["admin", "license", id], queryFn: () => admin.getLicense(id) })
+  const { data: lic, isLoading } = useQuery({
+    queryKey: ["admin", "license", id],
+    queryFn: () => admin.getLicense(id),
+  })
   const [copied, setCopied] = useState(false)
   const [changingPlan, setChangingPlan] = useState(false)
   const [deleteConfirmation, setDeleteConfirmation] = useState("")
@@ -649,12 +660,25 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
     },
   })
 
+  // The key is not in the detail payload — it is fetched per click and
+  // the server audits each reveal. Keep it in component state only, so
+  // it lives no longer than the open dialog.
+  const [revealedKey, setRevealedKey] = useState<string | null>(null)
+  const revealMut = useMutation({
+    mutationFn: () => admin.revealLicenseKey(id),
+    onSuccess: (r) => setRevealedKey(r.license_key),
+  })
   const copyKey = () => {
-    if (lic) {
-      navigator.clipboard.writeText(lic.license_key)
+    const write = (key: string) => {
+      navigator.clipboard.writeText(key)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     }
+    if (revealedKey) {
+      write(revealedKey)
+      return
+    }
+    revealMut.mutate(undefined, { onSuccess: (r) => write(r.license_key) })
   }
 
   return (
@@ -681,7 +705,21 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                   <div>
                     <p className="text-muted-foreground">{t("licenses.licenseKey")}</p>
                     <div className="flex items-center gap-2 mt-1">
-                      <code className="bg-muted px-2 py-1 rounded text-xs">{lic.license_key}</code>
+                      <code className="bg-muted px-2 py-1 rounded text-xs">
+                        {revealedKey ?? maskKey(lic.license_key_hint)}
+                      </code>
+                      {!revealedKey && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          title={t("licenses.revealKey")}
+                          disabled={revealMut.isPending}
+                          onClick={() => revealMut.mutate()}
+                        >
+                          <Eye className="h-3 w-3" />
+                        </Button>
+                      )}
                       <Button variant="ghost" size="icon" className="h-6 w-6" onClick={copyKey}>
                         {copied ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
                       </Button>

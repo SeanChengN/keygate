@@ -295,7 +295,10 @@ type License struct {
 	CustomerID string `bun:",nullzero" json:"customer_id,omitempty"`
 	UserID     string `bun:",nullzero" json:"user_id,omitempty"`
 	Email      string `bun:",notnull" json:"email"`
-	LicenseKey string `bun:",notnull,unique" json:"license_key"`
+	// LicenseKey is an activation credential. Ordinary license payloads must
+	// not expose it; creation, the customer portal, and the administrator-only
+	// reveal endpoint opt in through dedicated response types.
+	LicenseKey string `bun:",notnull,unique" json:"-"`
 	KeyHash    string `bun:",notnull,default:''" json:"-"` // never exposed in API
 	// LicenseKeyEncrypted stores the license key encrypted at rest under
 	// HKDF("license-key") subkey of the master encryption key. Phase A:

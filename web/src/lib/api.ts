@@ -108,7 +108,7 @@ export const invites = {
 
 // ─── Portal ───
 export const portal = {
-  licenses: () => get<{ licenses: License[] }>("/portal/licenses"),
+  licenses: () => get<{ licenses: PortalLicense[] }>("/portal/licenses"),
   listPlans: (productId: string) => get<{ plans: Plan[] }>(`/portal/plans?product_id=${productId}`),
   updateProfile: (data: { name: string }) =>
     put<{ id: string; email: string; name: string; avatar_url: string; role: string }>("/portal/profile", data),
@@ -196,9 +196,12 @@ export const admin = {
     if (params?.unassigned_customer) q.set("unassigned_customer", "true")
     if (params?.offset) q.set("offset", String(params.offset))
     if (params?.limit) q.set("limit", String(params.limit))
-    return get<{ licenses: License[]; total: number }>(`/admin/licenses?${q}`)
+    return get<{ licenses: License[]; total: number; license_key_hints: Record<string, string> }>(
+      `/admin/licenses?${q}`,
+    )
   },
-  getLicense: (id: string) => get<License>(`/admin/licenses/${id}`),
+  getLicense: (id: string) => get<License & { license_key_hint: string }>(`/admin/licenses/${id}`),
+  revealLicenseKey: (id: string) => get<{ license_key: string }>(`/admin/licenses/${id}/key`),
   createLicense: (data: {
     product_id: string
     plan_id: string
@@ -208,7 +211,7 @@ export const admin = {
     external_customer_id?: string
     external_workspace_id?: string
     valid_until?: string
-  }) => post<License>("/admin/licenses", data),
+  }) => post<License & { license_key: string }>("/admin/licenses", data),
   setLicenseCustomer: (id: string, customerId: string) =>
     patch<{ customer_id: string }>(`/admin/licenses/${id}/customer`, { customer_id: customerId }),
   // Empty valid_until clears the expiry for non-subscription licenses.
@@ -394,7 +397,7 @@ export const admin = {
     return get<AnalyticsInsights>(`/admin/analytics/insights?${q}`)
   },
 
-  getUserDetail: (id: string) => get<UserDetail>(`/admin/users/${id}`),
+  getUserDetail: (id: string) => get<UserDetail & { license_key_hints: Record<string, string> }>(`/admin/users/${id}`),
 
   listCustomers: (params?: { search?: string; kind?: string; status?: string; offset?: number; limit?: number }) => {
     const q = new URLSearchParams()
@@ -412,8 +415,10 @@ export const admin = {
   restoreCustomer: (id: string) => post(`/admin/customers/${id}/restore`),
 
   // Settings
-  getSettings: () => get<{ settings: Record<string, string> }>("/admin/settings"),
+  getSettings: () =>
+    get<{ settings: Record<string, string>; secrets_set?: Record<string, boolean> }>("/admin/settings"),
   updateSettings: (settings: Record<string, string>) => put<{ status: string }>("/admin/settings", { settings }),
+  clearSecretSetting: (key: string) => del<{ status: string; key: string }>(`/admin/settings/secrets/${key}`),
   sendTestEmail: () => post<{ status: string }>("/admin/settings/test-email"),
 
   // Email Templates
@@ -586,7 +591,7 @@ export interface License {
   customer_id?: string
   user_id?: string
   email: string
-  license_key: string
+  license_key?: string
   payment_provider?: string
   stripe_subscription_id?: string
   status: string
@@ -606,6 +611,10 @@ export interface License {
   activations?: Activation[]
   seats?: Seat[]
   addons?: LicenseAddon[]
+}
+
+export interface PortalLicense extends License {
+  license_key: string
 }
 
 export interface ManualRenewalResult {
@@ -910,6 +919,7 @@ export interface Invoice {
 export interface UserDetail {
   user: User
   licenses: License[]
+  license_key_hints?: Record<string, string>
   subscriptions: Subscription[]
   total_usage: number
   active_seats: number

@@ -83,6 +83,26 @@ const TIMEZONE_CITY_ZH: Record<string, string> = {
   "Pacific/Auckland": "奥克兰",
 }
 
+const FORM_KEYS = [
+  "site_name",
+  "timezone",
+  "language",
+  "brand_color",
+  "logo_url",
+  "smtp_host",
+  "smtp_port",
+  "smtp_username",
+  "smtp_password",
+  "smtp_from",
+  "rate_limit_api",
+  "rate_limit_admin",
+  "webhook_max_attempts",
+  "webhook_timeout",
+  "quota_warning_threshold",
+] as const
+
+type FormKey = (typeof FORM_KEYS)[number]
+
 export default function SettingsPage() {
   const { t, locale, setLocale } = useI18n()
   const qc = useQueryClient()
@@ -101,7 +121,8 @@ export default function SettingsPage() {
   }, [data])
 
   const saveMut = useMutation({
-    mutationFn: () => admin.updateSettings(form),
+    mutationFn: () =>
+      admin.updateSettings(Object.fromEntries(FORM_KEYS.filter((key) => key in form).map((key) => [key, form[key]]))),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "settings"] })
       setSaved(true)
@@ -111,6 +132,14 @@ export default function SettingsPage() {
 
   const testEmailMut = useMutation({
     mutationFn: admin.sendTestEmail,
+  })
+
+  const clearSecretMut = useMutation({
+    mutationFn: (key: string) => admin.clearSecretSetting(key),
+    onSuccess: () => {
+      setForm((current) => ({ ...current, smtp_password: "" }))
+      qc.invalidateQueries({ queryKey: ["admin", "settings"] })
+    },
   })
 
   const { data: versionData } = useQuery({
@@ -133,7 +162,7 @@ export default function SettingsPage() {
     queryFn: admin.getMigrations,
   })
 
-  const set = (key: string, value: string) => setForm((f) => ({ ...f, [key]: value }))
+  const set = (key: FormKey, value: string) => setForm((f) => ({ ...f, [key]: value }))
 
   if (isLoading) {
     return (
@@ -297,11 +326,25 @@ export default function SettingsPage() {
                 </div>
                 <div className="space-y-2">
                   <Label>{t("settings.smtpPassword")}</Label>
-                  <Input
-                    type="password"
-                    value={form.smtp_password || ""}
-                    onChange={(e) => set("smtp_password", e.target.value)}
-                  />
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="password"
+                      value={form.smtp_password || ""}
+                      onChange={(e) => set("smtp_password", e.target.value)}
+                      placeholder={data?.secrets_set?.smtp_password ? t("settings.smtpPasswordStored") : ""}
+                    />
+                    {data?.secrets_set?.smtp_password && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="shrink-0"
+                        disabled={clearSecretMut.isPending}
+                        onClick={() => clearSecretMut.mutate("smtp_password")}
+                      >
+                        {t("settings.smtpPasswordClear")}
+                      </Button>
+                    )}
+                  </div>
                 </div>
                 <div className="space-y-2 col-span-2">
                   <Label>{t("settings.smtpFrom")}</Label>

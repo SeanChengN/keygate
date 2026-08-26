@@ -56,3 +56,28 @@ func TestStripV(t *testing.T) {
 		}
 	}
 }
+
+func TestSemverNewerForkReleases(t *testing.T) {
+	tests := []struct {
+		latest, current string
+		want            bool
+	}{
+		{"0.1.2-dw.11", "0.1.2-dw.10", true},
+		{"0.1.2-dw.10", "0.1.2-dw.11", false},
+		{"0.1.3-dw.1", "0.1.2-dw.99", true},
+		{"0.1.2-dw.99", "0.1.3-dw.1", false},
+		{"0.1.3-dw.1", "0.1.3", true},
+	}
+	for _, tt := range tests {
+		if got := semverNewer(tt.latest, tt.current); got != tt.want {
+			t.Errorf("semverNewer(%q, %q) = %v, want %v", tt.latest, tt.current, got, tt.want)
+		}
+	}
+}
+
+func TestNewSystemHandlerUsesForkRepository(t *testing.T) {
+	h := NewSystemHandler(nil)
+	if h.RepoOwner != "SeanChengN" || h.RepoName != "keygate" {
+		t.Fatalf("update repository = %s/%s, want SeanChengN/keygate", h.RepoOwner, h.RepoName)
+	}
+}

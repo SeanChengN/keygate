@@ -264,3 +264,67 @@ func TestEntitlements(t *testing.T) {
 		t.Error("nil plan should return empty features")
 	}
 }
+
+func TestSignTokenAtClampsToLicenseDeadline(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	devicePublicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceKey := base64.RawURLEncoding.EncodeToString(devicePublicKey)
+	svc := &LicenseService{signingKey: privateKey}
+	now := time.Now().UTC().Truncate(time.Second)
+
+	tests := []struct {
+		name       string
+		status     string
+		validUntil *time.Time
+		graceDays  int
+		wantExpiry time.Time
+		wantGrace  int
+	}{
+		{"short validity", model.StatusActive, timePtr(now.Add(24 * time.Hour)), 0, now.Add(24 * time.Hour), 0},
+		{"grace inside ttl", model.StatusActive, timePtr(now.Add(24 * time.Hour)), 2, now.Add(72 * time.Hour), 2},
+		{"distant validity", model.StatusActive, timePtr(now.Add(30 * 24 * time.Hour)), 7, now.Add(tokenTTL), 7},
+		{"perpetual", model.StatusActive, nil, 7, now.Add(tokenTTL), 7},
+		{"canceled has no grace", model.StatusCanceled, timePtr(now.Add(24 * time.Hour)), 7, now.Add(24 * time.Hour), 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lic := &model.License{
+				ID: "lic", ProductID: "prod", PlanID: "plan", Status: tt.status,
+				ValidUntil: tt.validUntil,
+				Plan:       &model.Plan{Name: "Plan", LicenseType: "subscription", GraceDays: tt.graceDays},
+			}
+			raw, err := svc.signTokenAt(lic, "device-1", now, deviceKey)
+			if err != nil {
+				t.Fatalf("signTokenAt: %v", err)
+			}
+			tok, err := licensepkg.Verify(raw, privateKey.Public().(ed25519.PublicKey))
+			if err != nil {
+				t.Fatalf("verify: %v", err)
+			}
+			if tok.ExpiresAt != tt.wantExpiry.Unix() {
+				t.Errorf("exp = %d, want %d", tok.ExpiresAt, tt.wantExpiry.Unix())
+			}
+			if tok.GraceDays != tt.wantGrace {
+				t.Errorf("grace = %d, want %d", tok.GraceDays, tt.wantGrace)
+			}
+			if tt.validUntil == nil {
+				if tok.ValidUntil != nil {
+					t.Errorf("vld = %v, want omitted", tok.ValidUntil)
+				}
+			} else if tok.ValidUntil == nil || *tok.ValidUntil != tt.validUntil.Unix() {
+				t.Errorf("vld = %v, want %d", tok.ValidUntil, tt.validUntil.Unix())
+			}
+		})
+	}
+}
+
+func timePtr(value time.Time) *time.Time {
+	return &value
+}
