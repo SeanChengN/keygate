@@ -1,0 +1,28 @@
+* text=auto eol=lf
+.gitattributes text eol=lf
+.editorconfig text eol=lf
+
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+bun.lock text eol=lf
+Makefile text eol=lf
+LICENSE text eol=lf
+NOTICE text eol=lf
+*.sql text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.svg text eol=lf
+*.md text eol=lf
+
+*.png -text
+# Windows command scripts are the only repository text that stays CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
