@@ -63,7 +63,13 @@ gh run watch $RunId --exit-status
 gh release view $Tag
 ```
 
-如果工作流失败，先用 `gh run view $RunId --log-failed` 查看原因；修复仓库权限或临时运行问题后执行 `gh run rerun $RunId --failed`。不要为了重跑 Release 删除、移动或重新推送同名标签。control-plane 构建生产镜像只依赖远端标签存在且能解析到正确提交，不依赖 GitHub Release 页面；但仍建议确认自动 Release 工作流成功后再交接。
+如果工作流失败，先用 `gh run view $RunId --log-failed` 查看原因；修复仓库权限或临时运行问题后执行 `gh run rerun $RunId --failed`。如果工作流在创建任何 job 前以 `startup_failure` 结束且原运行无法重跑，应先修复并推送 `main` 上的工作流，再显式指定已经存在的不可变标签运行恢复入口：
+
+```powershell
+gh workflow run release.yml --ref main -f release_tag=$Tag
+```
+
+恢复入口会运行完整 CI，并在发布任务中检出和发布指定标签。不要为了重跑 Release 删除、移动或重新推送同名标签。control-plane 构建生产镜像只依赖远端标签存在且能解析到正确提交，不依赖 GitHub Release 页面；但仍建议确认 Release 工作流成功后再交接。
 
 如果标签仅在本地创建且指错提交，可在推送前执行 `git tag -d $Tag`，然后重新创建。标签一旦推送到远端，就不要移动、强制覆盖或复用；修复代码后创建下一个 `dw` 序号。
 

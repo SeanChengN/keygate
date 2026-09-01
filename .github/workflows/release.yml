@@ -4,9 +4,16 @@ on:
   push:
     tags:
       - "v*-dw.*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing immutable vX.Y.Z-dw.N tag to release"
+        required: true
+        type: string
 
 permissions:
   contents: write
+  security-events: write
 
 jobs:
   validate:
@@ -19,11 +26,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
 
       - name: Validate maintained tag format
         shell: bash
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-dw\.[1-9][0-9]*$ ]] || {
             echo "Release tag must match vX.Y.Z-dw.N" >&2
@@ -34,3 +43,4 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           generate_release_notes: true
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
