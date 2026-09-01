@@ -1,6 +1,7 @@
 // Rate limiting middleware with pluggable backends.
 // Supports in-memory (single instance) and Redis (multi-instance) backends.
-// Set REDIS_URL to enable Redis backend; falls back to in-memory if not set.
+// Set REDIS_URL to enable Redis backend. Redis errors fail closed because a
+// security dependency outage must not silently remove request budgets.
 package middleware
 
 import (
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 )
 
 // RateLimitBackend abstracts the rate limiting storage.
@@ -92,12 +94,7 @@ func (mb *memoryBackend) cleanup() {
 // RedisClient is a minimal interface for Redis operations needed by rate limiting.
 // Compatible with github.com/redis/go-redis/v9.
 type RedisClient interface {
-	Eval(ctx context.Context, script string, keys []string, args ...interface{}) RedisResult
-}
-
-// RedisResult is the minimal result interface.
-type RedisResult interface {
-	Int64() (int64, error)
+	Eval(ctx context.Context, script string, keys []string, args ...interface{}) *redis.Cmd
 }
 
 type redisBackend struct {
@@ -131,7 +128,7 @@ func (rb *redisBackend) Allow(key string, rate int, window time.Duration) bool {
 	)
 	count, err := result.Int64()
 	if err != nil {
-		return true // fail open on Redis errors
+		return false
 	}
 	return count <= int64(rate)
 }
@@ -143,6 +140,13 @@ var defaultBackend RateLimitBackend = NewMemoryBackend()
 // SetRateLimitBackend sets the global rate limit backend (call once at startup).
 func SetRateLimitBackend(b RateLimitBackend) {
 	defaultBackend = b
+}
+
+// AllowRateLimit exposes the configured backend for handlers that can only
+// derive a privacy-preserving key after decoding the request body (for
+// example, password authentication keyed by both IP and email hash).
+func AllowRateLimit(key string, rate int, window time.Duration) bool {
+	return defaultBackend.Allow(key, rate, window)
 }
 
 // ─── Middleware ───

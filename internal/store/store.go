@@ -29,7 +29,8 @@ type Store struct {
 	// encrypted at rest in license_key_encrypted alongside the plaintext
 	// column. Reads prefer the encrypted column with fallback to plaintext.
 	// nil means encryption is disabled (legacy mode).
-	LicenseKeyAEAD *crypto.AESGCM
+	LicenseKeyAEAD        *crypto.AESGCM
+	LicenseKeyStorageMode string
 }
 
 func New(dsn string) (*Store, error) {
@@ -278,6 +279,19 @@ func (s *Store) FindUserIsAdmin(ctx context.Context, userID string) bool {
 	return role == model.RoleOwner || role == model.RoleAdmin
 }
 
+// FindUserSessionState supplies the authoritative state used for every JWT
+// request. A missing user is an authentication failure, not a non-admin user.
+func (s *Store) FindUserSessionState(ctx context.Context, userID string) (bool, int64, error) {
+	var state struct {
+		Role           string `bun:"role"`
+		AuthGeneration int64  `bun:"auth_generation"`
+	}
+	if err := s.DB.NewRaw("SELECT role, auth_generation FROM users WHERE id = ?", userID).Scan(ctx, &state); err != nil {
+		return false, 0, err
+	}
+	return state.Role == model.RoleOwner || state.Role == model.RoleAdmin, state.AuthGeneration, nil
+}
+
 // ListAdmins returns all users with admin or owner role.
 func (s *Store) ListAdmins(ctx context.Context) ([]*model.User, error) {
 	var out []*model.User
@@ -460,12 +474,15 @@ func (s *Store) DecryptLicenseKey(l *model.License) string {
 		if err == nil {
 			return string(pt)
 		}
-		slog.Warn("license key decrypt failed; falling back to plaintext column",
+		slog.Warn("license key decrypt failed",
 			"license_id", l.ID,
 			"ciphertext_bytes", len(l.LicenseKeyEncrypted),
 			"error", err)
 		// metric bump — observable via /metrics
 		licenseKeyDecryptFailuresInc()
+	}
+	if s.LicenseKeyStorageMode == "ciphertext_only" {
+		return ""
 	}
 	return l.LicenseKey
 }
@@ -488,6 +505,9 @@ func (s *Store) prepareLicenseForInsert(l *model.License) error {
 			return fmt.Errorf("encrypt license key: %w", err)
 		}
 		l.LicenseKeyEncrypted = ct
+		if s.LicenseKeyStorageMode == "ciphertext_only" {
+			l.LicenseKey = ""
+		}
 	}
 	return nil
 }
@@ -554,6 +574,9 @@ func (s *Store) FindLicenseByKey(ctx context.Context, key string) (*model.Licens
 		Where("license.key_hash = ?", keyHash).
 		Scan(ctx)
 	if err != nil {
+		if s.LicenseKeyStorageMode == "ciphertext_only" {
+			return l, err
+		}
 		// Fallback to plaintext for un-migrated keys — use fresh model
 		// to avoid mixing partial state from the failed hash lookup.
 		l = new(model.License)

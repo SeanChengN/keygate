@@ -111,7 +111,7 @@ func (s *Store) RotateSigningKey(ctx context.Context, newKey *model.ReleaseSigni
 	// Per-product advisory lock — held until COMMIT. Two concurrent
 	// RotateSigningKey calls for the same product will serialise here.
 	lockKey := signingKeyRotateLockSeed ^ stringHash(newKey.ProductID)
-	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", lockKey); err != nil {
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(?)", lockKey); err != nil {
 		return fmt.Errorf("acquire rotate lock: %w", err)
 	}
 

@@ -102,9 +102,9 @@ var (
 // a fresh COPY (not the underlying buffer), so zeroing it has no effect —
 // don't be misled by older versions of this code.
 //
-// Nil receiver: when storage isn't configured the service is wired as nil
-// (see main.go). All public methods short-circuit to ErrSigningDisabled
-// rather than panic, so handlers can map cleanly to a 503.
+// Nil receiver or nil AEAD means the encryption key is not configured. Object
+// storage is deliberately not part of this gate: key management works with
+// storage.Disabled and only SignArtifact needs artifact bytes.
 func (s *ReleaseSigningService) GenerateForProduct(ctx context.Context, productID string) (*model.ReleaseSigningKey, error) {
 	if s == nil || s.aead == nil {
 		return nil, ErrSigningDisabled
@@ -227,8 +227,7 @@ func (s *ReleaseSigningService) ExportPublicKeyTauri(ctx context.Context, produc
 // ExportPublicKeyPEM returns the active public key as a PEM-encoded
 // document suitable for embedding in client apps (Sparkle, Tauri).
 //
-// Returns ErrSigningDisabled when the service was wired without storage
-// (nil receiver) so handlers can return 503 cleanly.
+// Returns ErrSigningDisabled when the service has no signing-key store.
 //
 // Format:
 //

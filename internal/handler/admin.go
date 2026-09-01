@@ -2525,15 +2525,23 @@ func (h *AdminHandler) ExportLicenses(c *gin.Context) {
 			validUntil = l.ValidUntil.Format(time.RFC3339)
 		}
 		_ = w.Write([]string{
-			l.ID,
-			l.Email,
-			productName,
-			planName,
-			l.Status,
-			h.licenseKeyHint(l),
+			csvSafe(l.ID),
+			csvSafe(l.Email),
+			csvSafe(productName),
+			csvSafe(planName),
+			csvSafe(l.Status),
+			csvSafe(h.licenseKeyHint(l)),
 			l.ValidFrom.Format(time.RFC3339),
 			validUntil,
 			l.CreatedAt.Format(time.RFC3339),
 		})
 	}
+}
+
+func csvSafe(value string) string {
+	trimmed := strings.TrimLeft(value, " \t\r\n")
+	if trimmed != "" && strings.ContainsRune("=+-@", rune(trimmed[0])) {
+		return "'" + value
+	}
+	return value
 }

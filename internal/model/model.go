@@ -12,13 +12,16 @@ import (
 type User struct {
 	bun.BaseModel `bun:"table:users"`
 
-	ID        string    `bun:",pk" json:"id"`
-	Email     string    `bun:",notnull,unique" json:"email"`
-	Name      string    `json:"name"`
-	AvatarURL string    `json:"avatar_url,omitempty"`
-	Role      string    `bun:",notnull,default:'user'" json:"role"` // owner | admin | user
-	CreatedAt time.Time `bun:",nullzero,default:now()" json:"created_at"`
-	UpdatedAt time.Time `bun:",nullzero,default:now()" json:"updated_at"`
+	ID                string     `bun:",pk" json:"id"`
+	Email             string     `bun:",notnull,unique" json:"email"`
+	Name              string     `json:"name"`
+	AvatarURL         string     `json:"avatar_url,omitempty"`
+	Role              string     `bun:",notnull,default:'user'" json:"role"` // owner | admin | user
+	PasswordHash      string     `json:"-"`
+	PasswordChangedAt *time.Time `json:"-"`
+	AuthGeneration    int64      `bun:",notnull,default:0" json:"-"`
+	CreatedAt         time.Time  `bun:",nullzero,default:now()" json:"created_at"`
+	UpdatedAt         time.Time  `bun:",nullzero,default:now()" json:"updated_at"`
 }
 
 // Customer is a business record and deliberately independent from User,

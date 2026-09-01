@@ -1,9 +1,28 @@
 package middleware
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
+
+type failingRedisClient struct{}
+
+func (failingRedisClient) Eval(ctx context.Context, _ string, _ []string, _ ...interface{}) *redis.Cmd {
+	cmd := redis.NewCmd(ctx)
+	cmd.SetErr(errors.New("redis unavailable"))
+	return cmd
+}
+
+func TestRedisBackendFailsClosed(t *testing.T) {
+	backend := NewRedisBackend(failingRedisClient{})
+	if backend.Allow("security-sensitive", 10, time.Minute) {
+		t.Fatal("Redis errors must deny the request")
+	}
+}
 
 func TestMemoryBackendAllow(t *testing.T) {
 	mb := NewMemoryBackend().(*memoryBackend)

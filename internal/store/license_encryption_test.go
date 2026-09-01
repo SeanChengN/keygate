@@ -75,7 +75,7 @@ func TestDecryptLicenseKey_FallbackToPlaintext(t *testing.T) {
 }
 
 func TestDecryptLicenseKey_NoAEAD(t *testing.T) {
-	// Encryption disabled (e.g. storage not configured).
+	// Encryption disabled in a non-production development configuration.
 	s := &Store{}
 	l := &model.License{ID: "lic_x", LicenseKey: "KGT-FOO"}
 
@@ -149,5 +149,29 @@ func TestPrepareLicenseForInsert_DifferentIDsProduceDifferentCiphertexts(t *test
 	// binding is what matters for the cross-row replay defense above.
 	if string(l1.LicenseKeyEncrypted) == string(l2.LicenseKeyEncrypted) {
 		t.Error("identical plaintexts under different IDs must produce different ciphertexts")
+	}
+}
+
+func TestCiphertextOnlyNeverWritesOrFallsBackToPlaintext(t *testing.T) {
+	s := makeStoreWithAEAD(t)
+	s.LicenseKeyStorageMode = "ciphertext_only"
+	l := &model.License{LicenseKey: "KGT-CIPHERTEXT-ONLY"}
+	if err := s.prepareLicenseForInsert(l); err != nil {
+		t.Fatal(err)
+	}
+	if l.LicenseKey != "" {
+		t.Fatal("ciphertext_only insert must clear the plaintext column")
+	}
+	if l.KeyHash == "" || len(l.LicenseKeyEncrypted) == 0 {
+		t.Fatal("ciphertext_only insert must retain hash and ciphertext")
+	}
+
+	corrupt := &model.License{
+		ID:                  l.ID,
+		LicenseKey:          "PLAINTEXT-FALLBACK-MUST-NOT-BE-USED",
+		LicenseKeyEncrypted: []byte("invalid ciphertext"),
+	}
+	if got := s.DecryptLicenseKey(corrupt); got != "" {
+		t.Fatalf("ciphertext_only decrypt failure returned plaintext %q", got)
 	}
 }

@@ -41,6 +41,7 @@ func TestNewS3AllowsHTTPLoopback(t *testing.T) {
 		"http://localhost:9000",
 		"http://127.0.0.1:9000",
 		"http://[::1]:9000",
+		"http://[::1]",
 	} {
 		_, err := NewS3(context.Background(), S3Config{
 			Bucket:    "x",
@@ -51,6 +52,18 @@ func TestNewS3AllowsHTTPLoopback(t *testing.T) {
 		if err != nil {
 			t.Errorf("expected loopback %q to be accepted, got %v", ep, err)
 		}
+	}
+}
+
+func TestNewS3RejectsEndpointCredentials(t *testing.T) {
+	_, err := NewS3(context.Background(), S3Config{
+		Bucket:    "x",
+		AccessKey: "a",
+		SecretKey: "b",
+		Endpoint:  "https://user:password@example.com",
+	})
+	if err == nil || !strings.Contains(err.Error(), "credentials") {
+		t.Fatalf("expected endpoint credentials to be rejected, got %v", err)
 	}
 }
 

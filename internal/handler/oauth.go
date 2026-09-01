@@ -125,7 +125,7 @@ func (h *AuthHandler) issueSession(c *gin.Context, user *model.User) {
 	// happens at request time via DB role lookup in SessionAuth middleware.
 	token, _ := middleware.IssueJWT(
 		h.Config.JWTSecret, user.ID, user.Email, user.Name,
-		user.IsAdmin(), 24*time.Hour,
+		user.IsAdmin(), user.AuthGeneration, 24*time.Hour,
 	)
 	setSecureCookie(c, "session", token, 24*3600, "/", h.Config.IsProduction(), true)
 
@@ -144,7 +144,8 @@ func hashToken(raw string) string {
 
 func (h *AuthHandler) Providers(c *gin.Context) {
 	devLogin := h.Config.IsDevLoginAllowed()
-	response.OK(c, gin.H{"dev_login": devLogin, "otp": true})
+	otp := h.Email != nil && h.Email.IsConfigured()
+	response.OK(c, gin.H{"dev_login": devLogin, "otp": otp, "admin_password": true})
 }
 
 // DevLogin is a development-only endpoint that creates a session without email OTP.

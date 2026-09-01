@@ -643,6 +643,18 @@ const en = {
   "login.resendCode": "Resend code",
   "login.resendIn": "Resend in {seconds}s",
   "login.or": "or",
+  "login.method": "Sign-in method",
+  "login.adminPassword": "Administrator",
+  "login.emailCode": "Email code",
+  "login.adminPrivateHint": "Local administrator sign-in remains available when email delivery is offline.",
+  "login.recoveryHint": "Use one unused offline recovery code and choose a new password.",
+  "login.password": "Password",
+  "login.newPassword": "New password",
+  "login.recoveryCode": "Recovery code",
+  "login.signIn": "Sign in",
+  "login.recoverAccess": "Recover access",
+  "login.useRecoveryCode": "Use an offline recovery code",
+  "login.backToPassword": "Back to password sign-in",
 
   // Checkout
   "checkout.verifying": "Verifying your payment...",

@@ -15,32 +15,35 @@ func NewUsageHandler(svc *service.UsageService) *UsageHandler {
 	return &UsageHandler{svc: svc}
 }
 
-func (h *UsageHandler) RecordUsage(c *gin.Context) {
-	var req struct {
-		LicenseKey string         `json:"license_key" binding:"required"`
-		Feature    string         `json:"feature" binding:"required"`
-		Quantity   int64          `json:"quantity"`
-		Metadata   map[string]any `json:"metadata"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "license_key and feature are required")
-		return
-	}
+func (h *UsageHandler) RecordUsage(trusted bool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			LicenseKey string         `json:"license_key" binding:"required"`
+			Feature    string         `json:"feature" binding:"required"`
+			Quantity   int64          `json:"quantity"`
+			Metadata   map[string]any `json:"metadata"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.BadRequest(c, "license_key and feature are required")
+			return
+		}
 
-	productID, _ := c.Get("product_id")
-	result, err := h.svc.RecordUsage(c.Request.Context(), service.RecordUsageInput{
-		LicenseKey: req.LicenseKey,
-		Feature:    req.Feature,
-		Quantity:   req.Quantity,
-		Metadata:   req.Metadata,
-		ProductID:  str(productID),
-		IPAddress:  c.ClientIP(),
-	})
-	if err != nil {
-		writeAppErr(c, err)
-		return
+		productID, _ := c.Get("product_id")
+		result, err := h.svc.RecordUsage(c.Request.Context(), service.RecordUsageInput{
+			LicenseKey: req.LicenseKey,
+			Feature:    req.Feature,
+			Quantity:   req.Quantity,
+			Metadata:   req.Metadata,
+			ProductID:  str(productID),
+			IPAddress:  c.ClientIP(),
+			Trusted:    trusted,
+		})
+		if err != nil {
+			writeAppErr(c, err)
+			return
+		}
+		response.OK(c, result)
 	}
-	response.OK(c, result)
 }
 
 func (h *UsageHandler) GetQuotaStatus(c *gin.Context) {

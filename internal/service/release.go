@@ -363,6 +363,9 @@ func (s *ReleaseService) FinalizeArtifact(ctx context.Context, in FinalizeArtifa
 
 	info, err := s.storage.Head(ctx, a.FileKey)
 	if err != nil {
+		if errors.Is(err, storage.ErrStorageDisabled) {
+			return nil, apperr.New(503, "STORAGE_DISABLED", "release storage is not configured on this server")
+		}
 		if errors.Is(err, storage.ErrObjectNotFound) {
 			return nil, apperr.New(409, "UPLOAD_INCOMPLETE", ErrReleaseUploadIncomplete.Error())
 		}
@@ -489,7 +492,10 @@ func (s *ReleaseService) Publish(ctx context.Context, releaseID string) (*model.
 	// Verify each artifact still exists in storage.
 	for _, a := range rel.Artifacts {
 		exists, headErr := s.storage.Exists(ctx, a.FileKey)
-		if headErr != nil && !errors.Is(headErr, storage.ErrStorageDisabled) {
+		if errors.Is(headErr, storage.ErrStorageDisabled) {
+			return nil, apperr.New(503, "STORAGE_DISABLED", "release storage is not configured on this server")
+		}
+		if headErr != nil {
 			return nil, apperr.Internal(headErr)
 		}
 		if headErr == nil && !exists {
@@ -549,6 +555,9 @@ func (s *ReleaseService) Publish(ctx context.Context, releaseID string) (*model.
 				case errors.Is(err, ErrArtifactNotInStorage):
 					return nil, apperr.New(409, "ARTIFACT_MISSING",
 						fmt.Sprintf("artifact for platform %q is missing in storage", a.Platform))
+				case errors.Is(err, storage.ErrStorageDisabled):
+					return nil, apperr.New(503, "STORAGE_DISABLED",
+						"artifact storage is not configured")
 				default:
 					s.logger.Error("publish: sign failed",
 						"release_id", rel.ID, "artifact_id", a.ID, "error", err)

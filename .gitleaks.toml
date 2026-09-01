@@ -1,0 +1,19 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated paths and deterministic public test fixtures"
+paths = [
+  '''(^|/)\.git/''',
+  '''(^|/)\.recycle-bin/''',
+  '''(^|/)\.cache/''',
+  '''(^|/)web/node_modules/''',
+  '''(^|/)web/dist/''',
+]
+regexTarget = "secret"
+regexes = [
+  '''^(0123456789abcdef){2,4}$''',
+  '''^(abcdef0123456789){4}$''',
+  '''^KG-ABCDEFGH-12345678-ABCDEFGH-12345678$''',
+  '''^ed25519\.PrivateKey$''',
+]

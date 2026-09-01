@@ -1,4 +1,4 @@
-import { Mail, Terminal } from "lucide-react"
+import { KeyRound, Mail, ShieldCheck, Terminal } from "lucide-react"
 import { useEffect, useState } from "react"
 import { Navigate } from "react-router-dom"
 import { Button } from "@/components/ui/button"
@@ -20,6 +20,15 @@ export default function LoginPage() {
   const [devName, setDevName] = useState("Admin")
   const [devLoading, setDevLoading] = useState(false)
   const [devError, setDevError] = useState("")
+  const [authMode, setAuthMode] = useState<"otp" | "admin">("admin")
+  const [otpAvailable, setOtpAvailable] = useState(true)
+  const [adminEmail, setAdminEmail] = useState("")
+  const [adminPassword, setAdminPassword] = useState("")
+  const [adminLoading, setAdminLoading] = useState(false)
+  const [adminError, setAdminError] = useState("")
+  const [recovering, setRecovering] = useState(false)
+  const [recoveryCode, setRecoveryCode] = useState("")
+  const [newPassword, setNewPassword] = useState("")
 
   // OTP state
   const [otpStep, setOtpStep] = useState<"email" | "code">("email")
@@ -34,6 +43,8 @@ export default function LoginPage() {
       .providers()
       .then((r) => {
         setDevLogin(r.dev_login)
+        setOtpAvailable(r.otp)
+        if (!r.admin_password && r.otp) setAuthMode("otp")
       })
       .catch(() => {})
   }, [])
@@ -102,6 +113,21 @@ export default function LoginPage() {
     }
   }
 
+  const handleAdminLogin = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setAdminLoading(true)
+    setAdminError("")
+    try {
+      if (recovering) await auth.adminRecover(adminEmail, recoveryCode, newPassword)
+      else await auth.adminPasswordLogin(adminEmail, adminPassword)
+      await refetch()
+    } catch (err) {
+      setAdminError(err instanceof Error ? err.message : t("login.failed"))
+    } finally {
+      setAdminLoading(false)
+    }
+  }
+
   if (loading) return null
   if (user) return <Navigate to={user.is_admin ? "/admin" : "/portal"} replace />
 
@@ -116,8 +142,98 @@ export default function LoginPage() {
           <CardDescription>{t("login.subtitle")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
+          <div className="grid grid-cols-2 rounded-lg bg-muted p-1" role="tablist" aria-label={t("login.method")}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={authMode === "admin"}
+              className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${authMode === "admin" ? "bg-background shadow-sm" : "text-muted-foreground"}`}
+              onClick={() => setAuthMode("admin")}
+            >
+              {t("login.adminPassword")}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={authMode === "otp"}
+              disabled={!otpAvailable}
+              className={`rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${authMode === "otp" ? "bg-background shadow-sm" : "text-muted-foreground"}`}
+              onClick={() => setAuthMode("otp")}
+            >
+              {t("login.emailCode")}
+            </button>
+          </div>
+
+          {authMode === "admin" && (
+            <form onSubmit={handleAdminLogin} className="space-y-3">
+              <div className="flex items-center gap-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+                <ShieldCheck className="h-4 w-4 shrink-0 text-primary" />
+                {recovering ? t("login.recoveryHint") : t("login.adminPrivateHint")}
+              </div>
+              <div className="space-y-2">
+                <Label>{t("common.email")}</Label>
+                <Input
+                  type="email"
+                  value={adminEmail}
+                  onChange={(e) => setAdminEmail(e.target.value)}
+                  required
+                  autoFocus
+                />
+              </div>
+              {recovering ? (
+                <>
+                  <div className="space-y-2">
+                    <Label>{t("login.recoveryCode")}</Label>
+                    <Input
+                      className="font-mono uppercase"
+                      value={recoveryCode}
+                      onChange={(e) => setRecoveryCode(e.target.value)}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>{t("login.newPassword")}</Label>
+                    <Input
+                      type="password"
+                      minLength={16}
+                      maxLength={128}
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      required
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="space-y-2">
+                  <Label>{t("login.password")}</Label>
+                  <Input
+                    type="password"
+                    value={adminPassword}
+                    onChange={(e) => setAdminPassword(e.target.value)}
+                    required
+                  />
+                </div>
+              )}
+              {adminError && <p className="text-sm text-destructive">{adminError}</p>}
+              <Button type="submit" className="w-full" disabled={adminLoading}>
+                <KeyRound className="mr-2 h-4 w-4" />
+                {adminLoading ? t("login.signingIn") : recovering ? t("login.recoverAccess") : t("login.signIn")}
+              </Button>
+              <button
+                type="button"
+                className="w-full text-center text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => {
+                  setRecovering(!recovering)
+                  setAdminError("")
+                }}
+              >
+                {recovering ? t("login.backToPassword") : t("login.useRecoveryCode")}
+              </button>
+            </form>
+          )}
+
           {/* OTP Email Step */}
-          {otpStep === "email" && (
+          {authMode === "otp" && otpStep === "email" && (
             <form onSubmit={handleOtpSend} className="space-y-3">
               <div className="space-y-2">
                 <Label>{t("common.email")}</Label>
@@ -139,7 +255,7 @@ export default function LoginPage() {
           )}
 
           {/* OTP Code Step */}
-          {otpStep === "code" && (
+          {authMode === "otp" && otpStep === "code" && (
             <form onSubmit={handleOtpVerify} className="space-y-3">
               <p className="text-sm text-muted-foreground text-center">{t("login.codeSentTo", { email: otpEmail })}</p>
               <div className="space-y-2">

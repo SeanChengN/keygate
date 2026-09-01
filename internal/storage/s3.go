@@ -270,7 +270,13 @@ func validateEndpoint(endpoint string) error {
 	if u.Scheme != "https" && u.Scheme != "http" {
 		return errors.New("storage: endpoint must use http or https")
 	}
-	if u.Scheme == "http" && !isLoopbackHost(u.Host) {
+	if u.Hostname() == "" {
+		return errors.New("storage: endpoint hostname is required")
+	}
+	if u.User != nil {
+		return errors.New("storage: endpoint must not contain credentials")
+	}
+	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
 		return errors.New("storage: endpoint must use https (only loopback may use http)")
 	}
 	return nil
@@ -281,6 +287,7 @@ func isLoopbackHost(hostport string) bool {
 	if h, _, err := net.SplitHostPort(hostport); err == nil {
 		host = h
 	}
+	host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
 	if host == "localhost" {
 		return true
 	}

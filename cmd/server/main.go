@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"log/slog"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 	"github.com/stripe/stripe-go/v82"
 
 	"github.com/tabloy/keygate/internal/branding"
@@ -62,14 +65,33 @@ func main() {
 	}
 	defer db.Close()
 
+	var redisClient *redis.Client
+	if cfg.RedisURL != "" {
+		redisOptions, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			log.Fatalf("REDIS_URL: %v", err)
+		}
+		redisClient = redis.NewClient(redisOptions)
+		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		pingErr := redisClient.Ping(pingCtx).Err()
+		pingCancel()
+		if pingErr != nil {
+			_ = redisClient.Close()
+			if cfg.IsProduction() {
+				log.Fatalf("redis: startup ping failed: %v", pingErr)
+			}
+			log.Printf("WARNING: redis unavailable; using in-memory rate limiting: %v", pingErr)
+			redisClient = nil
+		} else {
+			middleware.SetRateLimitBackend(middleware.NewRedisBackend(redisClient))
+			defer redisClient.Close()
+		}
+	}
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	// Optional Redis-backed rate limiting
 	if cfg.RedisURL != "" {
-		logger.Info("Redis rate limiting enabled", "url", cfg.RedisURL)
-		// To enable: import github.com/redis/go-redis/v9 and uncomment:
-		// rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisURL})
-		// middleware.SetRateLimitBackend(middleware.NewRedisBackend(rdb))
+		logger.Info("Redis rate limiting enabled")
 	}
 
 	if cfg.StripeSecretKey != "" {
@@ -110,22 +132,12 @@ func main() {
 	// When STORAGE_* env vars aren't configured we fall back to a Disabled
 	// stub so the server still boots. Release endpoints will return 503 when
 	// they reach storage; license/billing functions are unaffected.
-	var releaseStorage storage.Storage = storage.Disabled{}
+	releaseStorage, err := initializeReleaseStorage(cfg)
+	if err != nil {
+		log.Fatalf("storage: %v", err)
+	}
 	if cfg.IsStorageEnabled() {
-		s3, err := storage.NewS3(context.Background(), storage.S3Config{
-			Endpoint:       cfg.StorageEndpoint,
-			Region:         cfg.StorageRegion,
-			Bucket:         cfg.StorageBucket,
-			AccessKey:      cfg.StorageAccessKey,
-			SecretKey:      cfg.StorageSecretKey,
-			ForcePathStyle: cfg.StorageForcePathStyle,
-		})
-		if err != nil {
-			logger.Error("storage: init failed; release endpoints will be disabled", "error", err)
-		} else {
-			releaseStorage = s3
-			logger.Info("storage: initialized", "endpoint", cfg.StorageEndpoint, "bucket", cfg.StorageBucket)
-		}
+		logger.Info("storage: initialized", "endpoint", cfg.StorageEndpoint, "bucket", cfg.StorageBucket)
 	} else {
 		logger.Info("storage: disabled (STORAGE_BUCKET/ACCESS_KEY/SECRET_KEY not all set)")
 	}
@@ -156,36 +168,39 @@ func main() {
 		if err != nil {
 			logger.Error("master key hex decode failed; license/release encryption disabled", "error", err)
 		} else {
-			// Wire license-key encryption — orthogonal to storage.
-			db.LicenseKeyAEAD = crypto.MustDeriveAEAD(masterRaw, "license-key")
-			logger.Info("license key encryption: enabled")
-
-			// Best-effort backfill of unencrypted historical rows. Non-blocking,
-			// resumable across restarts. No timeout — runs until done or shutdown.
-			go func() {
-				n, err := db.BackfillLicenseKeyEncrypted(context.Background(), logger)
-				if err != nil {
-					logger.Warn("license key backfill failed (will retry next start)",
-						"encrypted_so_far", n, "error", err)
-					return
+			licenseAEAD := crypto.MustDeriveAEAD(masterRaw, "license-key")
+			releaseAEAD := crypto.MustDeriveAEAD(masterRaw, "release-signing-private-key")
+			var previousLicenseAEAD, previousReleaseAEAD *crypto.AESGCM
+			if cfg.ReleaseKeyEncryptionKeyPrevious != "" {
+				previousRaw, decodeErr := hex.DecodeString(cfg.ReleaseKeyEncryptionKeyPrevious)
+				if decodeErr != nil {
+					log.Fatalf("RELEASE_KEY_ENCRYPTION_KEY_PREVIOUS: %v", decodeErr)
 				}
-				if n > 0 {
-					logger.Info("license key backfill complete", "encrypted", n)
-				}
-			}()
-
-			// Release signing requires storage in addition to the master key.
-			if cfg.IsStorageEnabled() {
-				releaseAEAD := crypto.MustDeriveAEAD(masterRaw, "release-signing-private-key")
-				releaseSigner = service.NewReleaseSigningService(service.ReleaseSigningServiceConfig{
-					Store:       db,
-					Storage:     releaseStorage,
-					AEAD:        releaseAEAD,
-					Logger:      logger,
-					MaxSignSize: cfg.MaxReleaseSignSize,
-				})
-				logger.Info("release signing: enabled", "max_sign_mb", cfg.MaxReleaseSignSize/(1024*1024))
+				previousLicenseAEAD = crypto.MustDeriveAEAD(previousRaw, "license-key")
+				previousReleaseAEAD = crypto.MustDeriveAEAD(previousRaw, "release-signing-private-key")
+				clear(previousRaw)
 			}
+			db.LicenseKeyAEAD = licenseAEAD
+			db.LicenseKeyStorageMode = cfg.LicenseKeyStorageMode
+			if err := db.MigrateKeyStorage(context.Background(), cfg.LicenseKeyStorageMode,
+				licenseAEAD, previousLicenseAEAD, releaseAEAD, previousReleaseAEAD); err != nil {
+				log.Fatalf("key storage migration: %v", err)
+			}
+			logger.Info("license key storage ready", "mode", cfg.LicenseKeyStorageMode)
+
+			// Signing-key management is independent from artifact storage. With
+			// storage.Disabled, admins can still generate, rotate, list, and export
+			// public keys; only artifact operations return STORAGE_DISABLED.
+			releaseSigner = service.NewReleaseSigningService(service.ReleaseSigningServiceConfig{
+				Store:       db,
+				Storage:     releaseStorage,
+				AEAD:        releaseAEAD,
+				Logger:      logger,
+				MaxSignSize: cfg.MaxReleaseSignSize,
+			})
+			logger.Info("release signing: key management enabled",
+				"artifact_storage_enabled", cfg.IsStorageEnabled(),
+				"max_sign_mb", cfg.MaxReleaseSignSize/(1024*1024))
 		}
 	} else {
 		logger.Warn("license key encryption: DISABLED (RELEASE_KEY_ENCRYPTION_KEY not set)")
@@ -334,6 +349,7 @@ func main() {
 
 	r.Use(middleware.RequestID())
 	r.Use(middleware.PrometheusMetrics())
+	r.Use(middleware.MaxRequestBody(cfg.HTTPMaxBodyBytes))
 
 	// Security headers & attribution (AGPL v3 Section 7b — see NOTICE)
 	r.Use(func(c *gin.Context) {
@@ -370,25 +386,31 @@ func main() {
 		c.Next()
 	})
 
-	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
-
 	r.GET("/health", func(c *gin.Context) {
-		status := "ok"
-		checks := gin.H{}
-
-		// DB check
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+	observabilityAuth := requireBearerToken(cfg.MetricsToken)
+	r.GET("/metrics", observabilityAuth, gin.WrapH(promhttp.Handler()))
+	r.GET("/ready", observabilityAuth, func(c *gin.Context) {
+		checks := gin.H{"database": "ok", "redis": "ok", "keys": "ok"}
+		ready := true
 		if err := db.DB.PingContext(c.Request.Context()); err != nil {
-			status = "degraded"
-			checks["database"] = "error: " + err.Error()
-		} else {
-			checks["database"] = "ok"
+			checks["database"] = "error"
+			ready = false
 		}
-
-		code := http.StatusOK
-		if status != "ok" {
-			code = http.StatusServiceUnavailable
+		if redisClient == nil || redisClient.Ping(c.Request.Context()).Err() != nil {
+			checks["redis"] = "error"
+			ready = false
 		}
-		c.JSON(code, gin.H{"status": status, "checks": checks, "version": version.Version})
+		if !cfg.IsMasterEncryptionKeyConfigured() || len(licenseSigningPriv) == 0 {
+			checks["keys"] = "error"
+			ready = false
+		}
+		if !ready {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not_ready", "checks": checks})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ready", "checks": checks, "version": version.Version})
 	})
 
 	// API documentation (public, read-only)
@@ -409,9 +431,11 @@ func main() {
 
 	v1.GET("/version", systemH.GetVersion)
 
-	setupH := handler.NewSetupHandler(db)
+	setupH := handler.NewSetupHandler(db, cfg)
 	v1.GET("/setup/status", setupH.Status)
-	v1.POST("/setup/initialize", setupH.Initialize)
+	v1.POST("/setup/initialize",
+		middleware.RateLimitByIPScoped("setup_initialize", 5, time.Hour),
+		setupH.Initialize)
 
 	// Public site config (no auth — used by login page, branding)
 	v1.GET("/config", func(c *gin.Context) {
@@ -476,7 +500,7 @@ func main() {
 		// member roster.
 		idem := middleware.Idempotency(db)
 		lic.POST("/activate", idem, licenseH.Activate)
-		lic.POST("/usage", idem, usageH.RecordUsage)
+		lic.POST("/usage", idem, usageH.RecordUsage(false))
 		lic.POST("/floating/checkout", idem, floatingH.CheckOut)
 
 		// Read / pure-status endpoints — no idempotency layer needed.
@@ -505,8 +529,10 @@ func main() {
 			middleware.RateLimitByIPScoped("otp_send", cfg.RateLimitOTPSend, time.Hour),
 			authH.OTPSend)
 		auth.POST("/otp/verify", authH.OTPVerify)
+		auth.POST("/admin/password", authH.AdminPasswordLogin)
+		auth.POST("/admin/recover", authH.AdminRecover)
 		auth.POST("/dev-login", authH.DevLogin)
-		auth.POST("/logout", middleware.SessionAuth(cfg.JWTSecret, db.FindUserIsAdmin), authH.Logout)
+		auth.POST("/logout", middleware.SessionAuth(cfg.JWTSecret, db.FindUserSessionState), authH.Logout)
 		auth.POST("/refresh", authH.Refresh)
 	}
 
@@ -522,7 +548,7 @@ func main() {
 	// Unified checkout: GET /pay/:checkout_id → Stripe
 	r.GET("/pay/:checkout_id", stripeH.CheckoutByPlan)
 
-	portal := v1.Group("/portal", middleware.SessionAuth(cfg.JWTSecret, db.FindUserIsAdmin))
+	portal := v1.Group("/portal", middleware.SessionAuth(cfg.JWTSecret, db.FindUserSessionState))
 	{
 		portal.GET("/me", authH.Me)
 		portal.GET("/licenses", func(c *gin.Context) {
@@ -742,7 +768,7 @@ func main() {
 			}
 			c.Next()
 		}
-		portal.POST("/usage", portalLicenseGuard, usageH.RecordUsage)
+		portal.POST("/usage", portalLicenseGuard, usageH.RecordUsage(true))
 		portal.POST("/usage/status", portalLicenseGuard, usageH.GetQuotaStatus)
 		portal.POST("/seats", portalLicenseGuard, seatH.ListSeats)
 		portal.POST("/seats/add", portalSeatMutationGuard, seatH.AddSeat)
@@ -784,7 +810,7 @@ func main() {
 	// concern, and a leaked CI key shouldn't be able to swap the
 	// product's release-signing identity.
 	baseAdminMW := []gin.HandlerFunc{
-		middleware.SessionOrAPIKey(cfg.JWTSecret, db, db.FindUserIsAdmin),
+		middleware.SessionOrAPIKey(cfg.JWTSecret, db, db.FindUserSessionState),
 		middleware.RateLimitByIP(cfg.RateLimitAdmin, time.Minute),
 	}
 	adminMW := append([]gin.HandlerFunc{}, baseAdminMW...)
@@ -927,14 +953,24 @@ func main() {
 		admin.GET("/products/:id/signing-keys", releaseSigningH.List)
 		admin.GET("/products/:id/signing-key/public.pem", releaseSigningH.DownloadPublicKey)
 		admin.GET("/products/:id/signing-key/tauri-pubkey", releaseSigningH.DownloadPublicKeyTauri)
+		admin.POST("/account/password",
+			middleware.RateLimitByIPScoped("admin_password_change", 10, 15*time.Minute),
+			authH.ChangeAdminPassword)
+		admin.POST("/account/recovery-codes/rotate",
+			middleware.RateLimitByIPScoped("admin_recovery_rotate", 10, 15*time.Minute),
+			authH.RotateRecoveryCodes)
 
 	}
 
 	serveFrontend(r)
 
 	srv := &http.Server{
-		Addr:    ":" + cfg.Port,
-		Handler: r,
+		Addr:              ":" + cfg.Port,
+		Handler:           r,
+		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+		ReadTimeout:       cfg.HTTPReadTimeout,
+		WriteTimeout:      cfg.HTTPWriteTimeout,
+		IdleTimeout:       cfg.HTTPIdleTimeout,
 	}
 
 	go func() {
@@ -960,6 +996,25 @@ func main() {
 	log.Println("Server exited gracefully")
 }
 
+func initializeReleaseStorage(cfg *config.Config) (storage.Storage, error) {
+	if !cfg.IsStorageEnabled() {
+		return storage.Disabled{}, nil
+	}
+
+	s3, err := storage.NewS3(context.Background(), storage.S3Config{
+		Endpoint:       cfg.StorageEndpoint,
+		Region:         cfg.StorageRegion,
+		Bucket:         cfg.StorageBucket,
+		AccessKey:      cfg.StorageAccessKey,
+		SecretKey:      cfg.StorageSecretKey,
+		ForcePathStyle: cfg.StorageForcePathStyle,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("configured object storage initialization failed: %w", err)
+	}
+	return s3, nil
+}
+
 // stripHTMLTags removes all HTML tags from a string to prevent XSS.
 func stripHTMLTags(s string) string {
 	var result strings.Builder
@@ -980,6 +1035,19 @@ func stripHTMLTags(s string) string {
 	return result.String()
 }
 
+func requireBearerToken(expected string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		scheme, provided, ok := strings.Cut(c.GetHeader("Authorization"), " ")
+		if !ok || !strings.EqualFold(scheme, "Bearer") || expected == "" ||
+			len(provided) != len(expected) || subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+			response.Unauthorized(c, "unauthorized")
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
 // serveFrontend serves the React SPA from web/dist if it exists.
 func serveFrontend(r *gin.Engine) {
 	distPath := "web/dist"
@@ -997,7 +1065,7 @@ func serveFrontend(r *gin.Engine) {
 		path := c.Request.URL.Path
 
 		// Let backend routes pass through.
-		if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/pay/") || path == "/health" || path == "/metrics" || path == "/docs" || strings.HasPrefix(path, "/docs/") {
+		if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/pay/") || path == "/health" || path == "/ready" || path == "/metrics" || path == "/docs" || strings.HasPrefix(path, "/docs/") {
 			c.Next()
 			return
 		}

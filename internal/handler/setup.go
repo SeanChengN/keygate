@@ -1,11 +1,14 @@
 package handler
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/tabloy/keygate/internal/config"
+	keycrypto "github.com/tabloy/keygate/internal/crypto"
 	"github.com/tabloy/keygate/internal/model"
 	"github.com/tabloy/keygate/internal/store"
 	"github.com/tabloy/keygate/pkg/apperr"
@@ -14,11 +17,12 @@ import (
 
 // SetupHandler manages the first-run setup wizard.
 type SetupHandler struct {
-	Store *store.Store
+	Store  *store.Store
+	Config *config.Config
 }
 
-func NewSetupHandler(s *store.Store) *SetupHandler {
-	return &SetupHandler{Store: s}
+func NewSetupHandler(s *store.Store, cfg *config.Config) *SetupHandler {
+	return &SetupHandler{Store: s, Config: cfg}
 }
 
 // setupNeeded returns true if no owner exists and setup_complete is not "true".
@@ -43,6 +47,10 @@ func (h *SetupHandler) setupNeeded(c *gin.Context) (bool, string) {
 // Status returns whether setup is needed and which step the wizard is on.
 // GET /api/v1/setup/status
 func (h *SetupHandler) Status(c *gin.Context) {
+	if h.Config == nil || !h.Config.SetupEnabled {
+		response.NotFound(c, "not found")
+		return
+	}
 	needed, step := h.setupNeeded(c)
 	response.OK(c, gin.H{
 		"needed": needed,
@@ -54,6 +62,17 @@ func (h *SetupHandler) Status(c *gin.Context) {
 // creating the first owner without authentication.
 // POST /api/v1/setup/initialize
 func (h *SetupHandler) Initialize(c *gin.Context) {
+	if h.Config == nil || !h.Config.SetupEnabled {
+		response.NotFound(c, "not found")
+		return
+	}
+	scheme, provided, ok := strings.Cut(c.GetHeader("Authorization"), " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") ||
+		len(provided) != len(h.Config.BootstrapSecret) ||
+		subtle.ConstantTimeCompare([]byte(provided), []byte(h.Config.BootstrapSecret)) != 1 {
+		response.Unauthorized(c, "unauthorized")
+		return
+	}
 	// 1. Verify setup not already complete
 	needed, _ := h.setupNeeded(c)
 	if !needed {
@@ -61,32 +80,14 @@ func (h *SetupHandler) Initialize(c *gin.Context) {
 		return
 	}
 
-	// Acquire advisory lock — check the boolean result, not just SQL error
-	var locked bool
-	if err := h.Store.DB.NewRaw("SELECT pg_try_advisory_lock(8675309)").Scan(c, &locked); err != nil {
-		response.Internal(c)
-		return
-	}
-	if !locked {
-		response.Err(c, http.StatusConflict, "SETUP_IN_PROGRESS", "another setup is in progress")
-		return
-	}
-	defer h.Store.DB.NewRaw("SELECT pg_advisory_unlock(8675309)").Exec(c)
-
-	// Re-check after acquiring lock
-	needed, _ = h.setupNeeded(c)
-	if !needed {
-		response.Err(c, http.StatusConflict, "SETUP_COMPLETE", "setup already complete")
-		return
-	}
-
 	var req struct {
-		AdminEmail  string `json:"admin_email" binding:"required,email"`
-		AdminName   string `json:"admin_name" binding:"required"`
-		SiteName    string `json:"site_name" binding:"required"`
-		ProductName string `json:"product_name" binding:"required"`
-		ProductSlug string `json:"product_slug" binding:"required"`
-		ProductType string `json:"product_type" binding:"required"`
+		AdminEmail    string `json:"admin_email" binding:"required,email"`
+		AdminName     string `json:"admin_name" binding:"required"`
+		SiteName      string `json:"site_name" binding:"required"`
+		ProductName   string `json:"product_name" binding:"required"`
+		ProductSlug   string `json:"product_slug" binding:"required"`
+		ProductType   string `json:"product_type" binding:"required"`
+		AdminPassword string `json:"admin_password" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request: "+err.Error())
@@ -112,6 +113,20 @@ func (h *SetupHandler) Initialize(c *gin.Context) {
 		response.BadRequest(c, err.Message)
 		return
 	}
+	passwordHash, err := keycrypto.HashPassword(req.AdminPassword)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	recoveryCodes, err := keycrypto.GenerateRecoveryCodes(10)
+	if err != nil {
+		response.Internal(c)
+		return
+	}
+	recoveryHashes := make([]string, len(recoveryCodes))
+	for i, code := range recoveryCodes {
+		recoveryHashes[i] = keycrypto.HashRecoveryCode(h.Config.OTPPepper, code)
+	}
 
 	// All mutations in a single transaction — if any step fails, everything rolls back
 	ctx := c.Request.Context()
@@ -121,12 +136,31 @@ func (h *SetupHandler) Initialize(c *gin.Context) {
 		return
 	}
 	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(?)", int64(8675309)); err != nil {
+		response.Internal(c)
+		return
+	}
+	var setupComplete bool
+	if err := tx.NewRaw(`
+		SELECT EXISTS (
+			SELECT 1 FROM settings WHERE key = 'setup_complete' AND value = 'true'
+		) OR EXISTS (
+			SELECT 1 FROM users WHERE role = 'owner'
+		)
+	`).Scan(ctx, &setupComplete); err != nil {
+		response.Internal(c)
+		return
+	}
+	if setupComplete {
+		response.Err(c, http.StatusConflict, "SETUP_COMPLETE", "setup already complete")
+		return
+	}
 
 	// Create owner user
 	userID := store.NewID()
 	if _, err := tx.NewRaw(
-		"INSERT INTO users (id, email, name, role, created_at, updated_at) VALUES (?, ?, ?, 'owner', now(), now()) ON CONFLICT (email) DO UPDATE SET role = 'owner', name = EXCLUDED.name, updated_at = now()",
-		userID, req.AdminEmail, req.AdminName,
+		"INSERT INTO users (id, email, name, role, password_hash, password_changed_at, created_at, updated_at) VALUES (?, ?, ?, 'owner', ?, now(), now(), now()) ON CONFLICT (email) DO UPDATE SET role = 'owner', name = EXCLUDED.name, password_hash = EXCLUDED.password_hash, password_changed_at = now(), updated_at = now()",
+		userID, req.AdminEmail, req.AdminName, passwordHash,
 	).Exec(ctx); err != nil {
 		response.Internal(c)
 		return
@@ -136,6 +170,15 @@ func (h *SetupHandler) Initialize(c *gin.Context) {
 	if err := tx.NewRaw("SELECT id FROM users WHERE email = ?", req.AdminEmail).Scan(ctx, &actualUserID); err != nil {
 		response.Internal(c)
 		return
+	}
+	for _, hash := range recoveryHashes {
+		if _, err := tx.NewRaw(
+			"INSERT INTO admin_recovery_codes (id, user_id, code_hash) VALUES (?, ?, ?)",
+			store.NewID(), actualUserID, hash,
+		).Exec(ctx); err != nil {
+			response.Internal(c)
+			return
+		}
 	}
 
 	// Set site_name
@@ -199,6 +242,7 @@ func (h *SetupHandler) Initialize(c *gin.Context) {
 		response.Internal(c)
 		return
 	}
+	c.Header("Cache-Control", "no-store")
 
 	// Build response objects
 	user := &model.User{ID: actualUserID, Email: req.AdminEmail, Name: req.AdminName, Role: model.RoleOwner}
@@ -206,8 +250,9 @@ func (h *SetupHandler) Initialize(c *gin.Context) {
 	plan := &model.Plan{ID: planID, ProductID: productID, Name: "Pro", Slug: "pro", LicenseType: "subscription", BillingInterval: "month"}
 
 	response.Created(c, gin.H{
-		"user":    user,
-		"product": product,
-		"plan":    plan,
+		"user":           user,
+		"product":        product,
+		"plan":           plan,
+		"recovery_codes": recoveryCodes,
 	})
 }

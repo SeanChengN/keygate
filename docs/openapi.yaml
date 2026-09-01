@@ -72,6 +72,8 @@ servers:
 security: []
 
 tags:
+  - name: Authentication
+    description: First-run setup and administrator authentication
   - name: Customers
     description: Manage business customer records independently from sign-in users
   - name: License
@@ -90,6 +92,116 @@ tags:
     description: Administrative license operations
 
 paths:
+  /setup/initialize:
+    post:
+      tags: [Authentication]
+      summary: Perform the one-time first-run initialization
+      description: |
+        Available only while `SETUP_ENABLED=true`. The bootstrap Bearer secret
+        is consumed by the committed setup state; replay after a successful
+        initialization returns `SETUP_COMPLETE`. Recovery codes are returned
+        once and the response must not be cached.
+      security: [{BootstrapAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [admin_email, admin_name, admin_password, site_name, product_name, product_slug, product_type]
+              properties:
+                admin_email: {type: string, format: email}
+                admin_name: {type: string}
+                admin_password: {type: string, minLength: 16, maxLength: 128, format: password}
+                site_name: {type: string}
+                product_name: {type: string}
+                product_slug: {type: string}
+                product_type: {type: string, enum: [saas, desktop, hybrid]}
+      responses:
+        "201": {description: Initialized; includes one-time recovery_codes}
+        "401": {description: Invalid bootstrap secret}
+        "404": {description: Setup is disabled}
+        "409": {description: Setup is already complete}
+
+  /auth/admin/password:
+    post:
+      tags: [Authentication]
+      summary: Sign in an existing owner or administrator with a local password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: {type: string, format: email}
+                password: {type: string, format: password}
+      responses:
+        "200": {description: Authenticated; session cookies are issued}
+        "401": {description: Invalid credentials}
+        "429": {description: Authentication attempt budget exhausted}
+
+  /auth/admin/recover:
+    post:
+      tags: [Authentication]
+      summary: Recover an administrator account with a one-time offline code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, recovery_code, new_password]
+              properties:
+                email: {type: string, format: email}
+                recovery_code: {type: string, format: password}
+                new_password: {type: string, minLength: 16, maxLength: 128, format: password}
+      responses:
+        "200": {description: Password replaced, old recovery codes and sessions revoked}
+        "401": {description: Invalid recovery request}
+        "429": {description: Authentication attempt budget exhausted}
+
+  /admin/account/password:
+    post:
+      tags: [Authentication]
+      summary: Change the current administrator password
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_password]
+              properties:
+                current_password:
+                  type: string
+                  format: password
+                  description: Required after a local password has been established; omit only when upgrading an administrator that has no password hash yet.
+                new_password: {type: string, minLength: 16, maxLength: 128, format: password}
+      responses:
+        "200": {description: Password changed and old sessions revoked}
+        "401": {description: Invalid credentials}
+
+  /admin/account/recovery-codes/rotate:
+    post:
+      tags: [Authentication]
+      summary: Replace all administrator recovery codes
+      security: [{BearerAuth: []}, {CookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password]
+              properties:
+                current_password: {type: string, format: password}
+      responses:
+        "200": {description: One-time recovery_codes; response must not be cached}
+        "401": {description: Invalid credentials}
+
   /license/pubkey:
     get:
       tags: [License]
@@ -1096,6 +1208,10 @@ components:
         maximum: 100
         default: 20
   securitySchemes:
+    BootstrapAuth:
+      type: http
+      scheme: bearer
+      description: One-time BOOTSTRAP_SECRET accepted only while setup is enabled.
     BearerAuth:
       type: http
       scheme: bearer
@@ -1108,8 +1224,8 @@ components:
       in: cookie
       name: session
       description: |
-        Portal session cookie issued by `/auth/otp/verify`,
-        `/auth/dev-login`, or `/invites/accept`. Required for
+        Session cookie issued by `/auth/otp/verify`, administrator password or
+        recovery login, `/auth/dev-login`, or `/invites/accept`. Required for
         `/portal/*` endpoints. The cookie is HttpOnly + SameSite=Lax;
         browsers attach it automatically.
 

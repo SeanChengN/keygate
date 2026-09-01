@@ -15,19 +15,21 @@ import (
 )
 
 type Claims struct {
-	UserID  string `json:"uid"`
-	Email   string `json:"email"`
-	Name    string `json:"name"`
-	IsAdmin bool   `json:"adm,omitempty"`
+	UserID         string `json:"uid"`
+	Email          string `json:"email"`
+	Name           string `json:"name"`
+	IsAdmin        bool   `json:"adm,omitempty"`
+	AuthGeneration int64  `json:"agen,omitempty"`
 	jwt.RegisteredClaims
 }
 
-func IssueJWT(secret, userID, email, name string, isAdmin bool, ttl time.Duration) (string, error) {
+func IssueJWT(secret, userID, email, name string, isAdmin bool, authGeneration int64, ttl time.Duration) (string, error) {
 	claims := Claims{
-		UserID:  userID,
-		Email:   email,
-		Name:    name,
-		IsAdmin: isAdmin,
+		UserID:         userID,
+		Email:          email,
+		Name:           name,
+		IsAdmin:        isAdmin,
+		AuthGeneration: authGeneration,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -36,17 +38,18 @@ func IssueJWT(secret, userID, email, name string, isAdmin bool, ttl time.Duratio
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
 }
 
-// AdminChecker checks if a user has admin privileges by user ID.
-// Injected at startup — queries the database for the user's role.
-type AdminChecker func(ctx context.Context, userID string) bool
+// SessionStateChecker verifies the server-side session generation and returns
+// current administrator status. Password/recovery changes increment the
+// generation, invalidating every previously issued JWT immediately.
+type SessionStateChecker func(ctx context.Context, userID string) (isAdmin bool, authGeneration int64, err error)
 
 // SessionAuth validates a JWT from the Authorization header or session cookie.
 // Admin status is checked at request time (from DB, not JWT claims) for security —
 // this ensures role changes take effect immediately without waiting for JWT expiry.
-func SessionAuth(secret string, adminCheck ...AdminChecker) gin.HandlerFunc {
-	var checkAdmin AdminChecker
-	if len(adminCheck) > 0 {
-		checkAdmin = adminCheck[0]
+func SessionAuth(secret string, stateChecks ...SessionStateChecker) gin.HandlerFunc {
+	var checkState SessionStateChecker
+	if len(stateChecks) > 0 {
+		checkState = stateChecks[0]
 	}
 
 	return func(c *gin.Context) {
@@ -76,8 +79,13 @@ func SessionAuth(secret string, adminCheck ...AdminChecker) gin.HandlerFunc {
 
 		// Determine admin status at request time from database role
 		isAdmin := false
-		if checkAdmin != nil {
-			isAdmin = checkAdmin(c.Request.Context(), claims.UserID)
+		if checkState != nil {
+			var generation int64
+			isAdmin, generation, err = checkState(c.Request.Context(), claims.UserID)
+			if err != nil || generation != claims.AuthGeneration {
+				abortWithError(c, http.StatusUnauthorized, "UNAUTHORIZED", "invalid or expired token")
+				return
+			}
 		} else {
 			isAdmin = claims.IsAdmin
 		}
@@ -103,8 +111,8 @@ func SessionAuth(secret string, adminCheck ...AdminChecker) gin.HandlerFunc {
 // auth_type ("session" or "api_key") is set so RequireScope and
 // audit code can tell the two paths apart without re-examining the
 // Authorization header.
-func SessionOrAPIKey(secret string, db *store.Store, adminCheck AdminChecker) gin.HandlerFunc {
-	sessionMW := SessionAuth(secret, adminCheck)
+func SessionOrAPIKey(secret string, db *store.Store, stateCheck SessionStateChecker) gin.HandlerFunc {
+	sessionMW := SessionAuth(secret, stateCheck)
 	return func(c *gin.Context) {
 		raw := extractBearer(c)
 		if strings.HasPrefix(raw, "kg_live_") {

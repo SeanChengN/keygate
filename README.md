@@ -84,11 +84,11 @@ Products, plans, licenses, customers, API keys, webhooks, analytics, audit logs,
 
 ### 🛡️ Security
 
-Email OTP login with constant-time hash verification, role-based access checked per-request from database, brute-force protection, rate limiting, HMAC-signed webhooks, SameSite cookies, HSTS, and startup validation that rejects weak secrets. License verify endpoints collapse all "license-knowable" failures to a single 404 so `license_key` enumeration is closed off. Idempotency-Key middleware prevents double-execution on retried writes.
+Email OTP plus local administrator password/recovery login, role-based access checked per-request from database, Redis-backed fail-closed production rate limiting, HMAC-signed webhooks, SSRF-resistant webhook delivery, SameSite cookies, HSTS, and startup validation that rejects weak secrets. License verify endpoints collapse all "license-knowable" failures to a single 404 so `license_key` enumeration is closed off. Idempotency-Key middleware prevents double-execution on retried writes.
 
 ### 🌍 Self-Hosted
 
-Single Go binary + PostgreSQL + (optional) S3-compatible storage for release artifacts. No Redis, no microservices. Auto-migration on startup. Setup wizard for first run. Custom branding, email templates, and i18n (English/Chinese built-in).
+Single Go binary + PostgreSQL + ephemeral Redis in production; S3-compatible artifact storage remains optional. Auto-migration on startup. Controlled one-time setup API, custom branding, email templates, and i18n (English/Chinese built-in).
 
 <br />
 
@@ -103,7 +103,7 @@ curl -O https://raw.githubusercontent.com/tabloy/keygate/main/.env.example
 cp .env.example .env
 
 # 2. Set your secrets
-# Edit .env: set JWT_SECRET and LICENSE_SIGNING_KEY (openssl rand -hex 32)
+# Edit .env and set every production secret documented in .env.example.
 
 # 3. Run
 docker compose up -d
@@ -117,7 +117,7 @@ cd keygate && cp .env.example .env
 make build && ./bin/keygate
 ```
 
-Open **http://localhost:9000** — the setup wizard guides you from there.
+Before a production first run, follow [Production security and key migration](docs/production-security.md). Then open **http://localhost:9000** and sign in.
 
 > 📖 Full docs, deployment guides, and SDK examples at **[keygate.app/docs](https://keygate.app/docs)**
 

@@ -29,6 +29,7 @@ type RecordUsageInput struct {
 	Metadata   map[string]any
 	ProductID  string
 	IPAddress  string
+	Trusted    bool
 }
 
 type RecordUsageResult struct {
@@ -43,6 +44,13 @@ type RecordUsageResult struct {
 func (s *UsageService) RecordUsage(ctx context.Context, in RecordUsageInput) (*RecordUsageResult, error) {
 	if in.Quantity <= 0 {
 		in.Quantity = 1
+	}
+	maxQuantity := int64(10_000)
+	if in.Trusted {
+		maxQuantity = 1_000_000_000
+	}
+	if in.Quantity > maxQuantity {
+		return nil, apperr.New(400, "QUANTITY_TOO_LARGE", "usage quantity exceeds the allowed maximum")
 	}
 
 	// Public SDK endpoint: collapse every "license unavailable"
@@ -115,7 +123,7 @@ func (s *UsageService) RecordUsage(ctx context.Context, in RecordUsageInput) (*R
 	// Best-effort: a failure here doesn't roll back the in-Keygate
 	// accounting (we'd rather over-grant than under-bill on a
 	// transient blip; the next RecordUsage isn't affected).
-	if quota.StripeMeterEventName != "" {
+	if in.Trusted && quota.StripeMeterEventName != "" {
 		if err := s.store.InsertMeteredEvent(ctx, lic.ID, in.Feature, periodKey, in.Quantity); err != nil {
 			s.logger.Error("metered enqueue failed", "license_id", lic.ID, "feature", in.Feature, "error", err)
 		}

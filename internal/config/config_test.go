@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 )
 
 func TestIsDevLoginAllowed(t *testing.T) {
@@ -68,8 +69,14 @@ func TestIsAdminEmail(t *testing.T) {
 func TestValidateSecurityDefaults(t *testing.T) {
 	t.Run("valid dev config", func(t *testing.T) {
 		c := &Config{
-			Environment: "development",
-			JWTSecret:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			Environment:           "development",
+			JWTSecret:             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			HTTPMaxBodyBytes:      1 << 20,
+			HTTPReadHeaderTimeout: 5 * time.Second,
+			HTTPReadTimeout:       15 * time.Second,
+			HTTPWriteTimeout:      60 * time.Second,
+			HTTPIdleTimeout:       60 * time.Second,
+			LicenseKeyStorageMode: "dual",
 			// 32-byte ed25519 seed in hex (64 chars).
 			LicenseSigningKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		}
@@ -115,24 +122,73 @@ func TestValidateSecurityDefaults(t *testing.T) {
 		}
 	})
 
-	t.Run("production without admin emails", func(t *testing.T) {
+	t.Run("production requires security dependencies", func(t *testing.T) {
 		c := &Config{
 			Environment: "production",
 			JWTSecret:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			// 32-byte ed25519 seed in hex (64 chars).
 			LicenseSigningKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		}
-		warnings, _ := c.ValidateSecurityDefaults()
-		found := false
-		for _, w := range warnings {
-			if w == "SECURITY: ADMIN_EMAILS is empty — no one can access the admin panel" {
-				found = true
-			}
-		}
-		if !found {
-			t.Error("expected admin emails warning in production")
+		_, fatal := c.ValidateSecurityDefaults()
+		if len(fatal) == 0 {
+			t.Error("expected production security dependency failures")
 		}
 	})
+}
+
+func TestStrictSecurityConfigParsing(t *testing.T) {
+	if _, err := parseStrictBool("FLAG", "1"); err == nil {
+		t.Fatal("numeric boolean must be rejected")
+	}
+	if _, err := parseStrictBool("FLAG", "yes"); err == nil {
+		t.Fatal("ambiguous boolean must be rejected")
+	}
+	if got, err := parseStrictBool("FLAG", " TRUE "); err != nil || !got {
+		t.Fatalf("strict true parse = %v, %v", got, err)
+	}
+	if got, err := parseStrictBool("FLAG", "false"); err != nil || got {
+		t.Fatalf("strict false parse = %v, %v", got, err)
+	}
+
+	t.Setenv("HTTP_READ_TIMEOUT", "not-a-duration")
+	if _, err := envDurationOr("HTTP_READ_TIMEOUT", time.Second); err == nil {
+		t.Fatal("invalid duration must be rejected")
+	}
+}
+
+func TestProductionSecurityConfiguration(t *testing.T) {
+	valid := &Config{
+		Environment:             "production",
+		JWTSecret:               "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		LicenseSigningKey:       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ReleaseKeyEncryptionKey: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+		RedisURL:                "redis://redis:6379/0",
+		OTPPepper:               "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		MetricsToken:            "cccccccccccccccccccccccccccccccc",
+		HTTPMaxBodyBytes:        1 << 20,
+		HTTPReadHeaderTimeout:   5 * time.Second,
+		HTTPReadTimeout:         15 * time.Second,
+		HTTPWriteTimeout:        60 * time.Second,
+		HTTPIdleTimeout:         60 * time.Second,
+		LicenseKeyStorageMode:   "dual",
+	}
+	if _, fatal := valid.ValidateSecurityDefaults(); len(fatal) != 0 {
+		t.Fatalf("valid production config rejected: %v", fatal)
+	}
+
+	withPreviousOnly := *valid
+	withPreviousOnly.ReleaseKeyEncryptionKey = ""
+	withPreviousOnly.ReleaseKeyEncryptionKeyPrevious = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if _, fatal := withPreviousOnly.ValidateSecurityDefaults(); len(fatal) == 0 {
+		t.Fatal("previous master key without a current key must be rejected")
+	}
+
+	weakSetup := *valid
+	weakSetup.SetupEnabled = true
+	weakSetup.BootstrapSecret = "too-short"
+	if _, fatal := weakSetup.ValidateSecurityDefaults(); len(fatal) == 0 {
+		t.Fatal("weak setup bootstrap secret must be rejected")
+	}
 }
 
 // TestStripeLivemodeDerivation pins the rules described in
@@ -151,7 +207,7 @@ func TestStripeLivemodeDerivation(t *testing.T) {
 		// Explicit env wins regardless of key prefix.
 		{"env true overrides sk_test", "true", true, "sk_test_xxx", true},
 		{"env TRUE case-insensitive", "TRUE", true, "", true},
-		{"env 1 numeric", "1", true, "", true},
+		{"env 1 rejected by strict loader and not treated as true", "1", true, "", false},
 		{"env false overrides sk_live", "false", true, "sk_live_xxx", false},
 		{"env 0 numeric", "0", true, "sk_live_xxx", false},
 		{"env garbage → false (only true/1 accepted)", "yes_please", true, "sk_live_xxx", false},

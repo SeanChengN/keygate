@@ -3,6 +3,8 @@
 .claude
 .codex
 .codegraph
+.recycle-bin
+.cache
 .env
 .env.*
 bin/

@@ -621,6 +621,18 @@ const zh = {
   "login.resendCode": "重新发送",
   "login.resendIn": "{seconds}秒后可重发",
   "login.or": "或",
+  "login.method": "登录方式",
+  "login.adminPassword": "管理员",
+  "login.emailCode": "邮箱验证码",
+  "login.adminPrivateHint": "本地管理员登录不依赖邮件服务，邮件故障时仍可进入管理后台。",
+  "login.recoveryHint": "使用一个尚未用过的离线恢复码，并设置新密码。",
+  "login.password": "密码",
+  "login.newPassword": "新密码",
+  "login.recoveryCode": "恢复码",
+  "login.signIn": "登录",
+  "login.recoverAccess": "恢复访问",
+  "login.useRecoveryCode": "使用离线恢复码",
+  "login.backToPassword": "返回密码登录",
 
   // Checkout
   "checkout.verifying": "正在验证您的付款...",

@@ -26,6 +26,7 @@ tmp/
 Thumbs.db
 
 # AI tools
+.cache/
 .claude/
 .claude.*
 .codex/

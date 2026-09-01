@@ -78,7 +78,7 @@ export const site = {
 export const auth = {
   me: () =>
     get<{ id: string; email: string; name: string; avatar_url: string; is_admin: boolean; role: string }>("/portal/me"),
-  providers: () => get<{ dev_login: boolean; otp: boolean }>("/auth/providers"),
+  providers: () => get<{ dev_login: boolean; otp: boolean; admin_password: boolean }>("/auth/providers"),
   logout: () => post<void>("/auth/logout"),
   devLogin: (email: string, name: string) => post<{ status: string }>("/auth/dev-login", { email, name }),
   otpSend: (email: string) => post<{ status: string }>("/auth/otp/send", { email }),
@@ -86,6 +86,14 @@ export const auth = {
     post<{ status: string; email: string; name: string; is_admin: boolean; role: string }>("/auth/otp/verify", {
       email,
       code,
+    }),
+  adminPasswordLogin: (email: string, password: string) =>
+    post<{ status: string }>("/auth/admin/password", { email, password }),
+  adminRecover: (email: string, recoveryCode: string, newPassword: string) =>
+    post<{ status: string }>("/auth/admin/recover", {
+      email,
+      recovery_code: recoveryCode,
+      new_password: newPassword,
     }),
 }
 

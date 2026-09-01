@@ -5,15 +5,17 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
-	"log/slog"
 	"math/big"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/tabloy/keygate/internal/model"
+	"github.com/tabloy/keygate/internal/store"
 	"github.com/tabloy/keygate/pkg/response"
 )
 
@@ -27,37 +29,34 @@ func (h *AuthHandler) OTPSend(c *gin.Context) {
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if h.Email == nil || !h.Email.IsConfigured() {
+		response.Err(c, http.StatusServiceUnavailable, "OTP_UNAVAILABLE", "email OTP is not configured")
+		return
+	}
 
 	// Rate limit: max 3 OTP requests per email per 10 minutes
-	count, err := h.Store.CountRecentOTPCodes(c, email)
-	if err != nil {
-		response.Internal(c)
-		return
-	}
-	if count >= 3 {
-		response.Err(c, 429, "RATE_LIMITED", "too many code requests, try again later")
-		return
-	}
-
 	code := generateOTPCode()
-	codeHash := hashOTPCode(code)
+	codeHash := hashOTPCode(h.Config.OTPPepper, code)
 
 	otp := &model.OTPCode{
 		Email:     email,
 		CodeHash:  codeHash,
 		ExpiresAt: time.Now().Add(10 * time.Minute),
 	}
-	if err := h.Store.CreateOTPCode(c, otp); err != nil {
+	if err := h.Store.CreateOTPForExistingUser(c, otp); err != nil {
+		if errors.Is(err, store.ErrOTPUserNotFound) {
+			// Enumeration-safe success: no code is persisted or delivered.
+			response.OK(c, gin.H{"status": "sent"})
+			return
+		}
+		if errors.Is(err, store.ErrOTPRateLimited) {
+			response.Err(c, 429, "RATE_LIMITED", "too many code requests, try again later")
+			return
+		}
 		response.Internal(c)
 		return
 	}
-
-	if h.Email != nil && h.Email.IsConfigured() {
-		h.Email.SendOTPCode(email, code)
-	} else {
-		slog.Warn("SMTP not configured — OTP code printed to log (configure SMTP for email delivery)",
-			"email", email, "code", code)
-	}
+	h.Email.SendOTPCode(email, code)
 
 	response.OK(c, gin.H{"status": "sent"})
 }
@@ -75,47 +74,13 @@ func (h *AuthHandler) OTPVerify(c *gin.Context) {
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 	code := strings.TrimSpace(req.Code)
 
-	otp, err := h.Store.FindLatestValidOTPCode(c, email)
-
-	// Always perform hash comparison to prevent timing-based email enumeration
-	expectedHash := hashOTPCode("") // dummy
-	otpID := ""
-	otpAttempts := 0
-	if err == nil && otp != nil {
-		expectedHash = otp.CodeHash
-		otpID = otp.ID
-		otpAttempts = otp.Attempts
-	}
-
-	codeMatch := hmac.Equal([]byte(hashOTPCode(code)), []byte(expectedHash))
-
-	if otpID != "" {
-		if err := h.Store.IncrementOTPAttempts(c, otpID); err != nil {
-			slog.Warn("failed to increment OTP attempts", "id", otpID, "error", err)
-		}
-	}
-
-	if !codeMatch || otp == nil {
-		remaining := 5 - (otpAttempts + 1)
-		if remaining <= 0 {
-			response.Unauthorized(c, "too many attempts, request a new code")
-		} else {
-			response.Unauthorized(c, "invalid or expired code")
-		}
+	presentedHash := hashOTPCode(h.Config.OTPPepper, code)
+	if _, err := h.Store.ConsumeOTPCode(c, email, presentedHash); err != nil {
+		response.Unauthorized(c, "invalid or expired code")
 		return
 	}
 
-	if err := h.Store.MarkOTPUsed(c, otpID); err != nil {
-		slog.Warn("failed to mark OTP used", "id", otpID, "error", err)
-	}
-
-	// Upsert user (create on first login)
-	user := &model.User{Email: email}
-	if err := h.Store.UpsertUser(c, user); err != nil {
-		response.Internal(c)
-		return
-	}
-	user, err = h.Store.FindUserByEmail(c, email)
+	user, err := h.Store.FindUserByEmail(c, email)
 	if err != nil {
 		response.Internal(c)
 		return
@@ -151,7 +116,8 @@ func generateOTPCode() string {
 	return fmt.Sprintf("%06d", n.Int64())
 }
 
-func hashOTPCode(code string) string {
-	h := sha256.Sum256([]byte(code))
-	return hex.EncodeToString(h[:])
+func hashOTPCode(pepper, code string) string {
+	mac := hmac.New(sha256.New, []byte("keygate/otp/v1/"+pepper))
+	_, _ = mac.Write([]byte(code))
+	return hex.EncodeToString(mac.Sum(nil))
 }

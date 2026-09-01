@@ -56,6 +56,10 @@ func (h *WebhookAdminHandler) CreateWebhook(c *gin.Context) {
 		response.BadRequest(c, err.Message)
 		return
 	}
+	if err := service.ValidateWebhookURL(c.Request.Context(), req.URL); err != nil {
+		response.BadRequest(c, "webhook URL must resolve only to public addresses")
+		return
+	}
 	if len(req.Events) == 0 {
 		response.BadRequest(c, "at least one event type is required")
 		return
@@ -108,6 +112,10 @@ func (h *WebhookAdminHandler) UpdateWebhook(c *gin.Context) {
 	if req.URL != nil {
 		if err := apperr.ValidateURL(*req.URL); err != nil {
 			response.BadRequest(c, err.Message)
+			return
+		}
+		if err := service.ValidateWebhookURL(c.Request.Context(), *req.URL); err != nil {
+			response.BadRequest(c, "webhook URL must resolve only to public addresses")
 			return
 		}
 		w.URL = *req.URL

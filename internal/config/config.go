@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -40,7 +41,17 @@ type Config struct {
 	SMTPPassword string
 	SMTPFrom     string
 
-	RedisURL string
+	RedisURL        string
+	OTPPepper       string
+	MetricsToken    string
+	SetupEnabled    bool
+	BootstrapSecret string
+
+	HTTPMaxBodyBytes      int64
+	HTTPReadHeaderTimeout time.Duration
+	HTTPReadTimeout       time.Duration
+	HTTPWriteTimeout      time.Duration
+	HTTPIdleTimeout       time.Duration
 
 	RateLimitAPI   int
 	RateLimitAdmin int
@@ -91,7 +102,9 @@ type Config struct {
 	//     run a re-encryption script, otherwise existing keys become
 	//     undecryptable and signing fails.
 	//   - Losing this key permanently locks all signed releases.
-	ReleaseKeyEncryptionKey string
+	ReleaseKeyEncryptionKey         string
+	ReleaseKeyEncryptionKeyPrevious string
+	LicenseKeyStorageMode           string
 
 	// MaxReleaseSignSize caps the largest artifact we will sign server-side.
 	// Pure Ed25519 requires the full message in memory; 500 MB is a
@@ -118,9 +131,42 @@ func Load() (*Config, error) {
 	}
 
 	envVal, envSet := os.LookupEnv("STRIPE_LIVEMODE")
+	if envSet {
+		if _, err := parseStrictBool("STRIPE_LIVEMODE", envVal); err != nil {
+			return nil, err
+		}
+	}
 	cfg.StripeLivemode = deriveLivemode(envVal, envSet, cfg.StripeSecretKey)
 
 	cfg.RedisURL = os.Getenv("REDIS_URL")
+	cfg.OTPPepper = os.Getenv("OTP_PEPPER")
+	cfg.MetricsToken = os.Getenv("METRICS_TOKEN")
+	cfg.BootstrapSecret = os.Getenv("BOOTSTRAP_SECRET")
+	var err error
+	cfg.SetupEnabled, err = envStrictBoolOr("SETUP_ENABLED", false)
+	if err != nil {
+		return nil, err
+	}
+	cfg.HTTPMaxBodyBytes, err = envInt64Or("HTTP_MAX_BODY_BYTES", 1<<20)
+	if err != nil {
+		return nil, err
+	}
+	cfg.HTTPReadHeaderTimeout, err = envDurationOr("HTTP_READ_HEADER_TIMEOUT", 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	cfg.HTTPReadTimeout, err = envDurationOr("HTTP_READ_TIMEOUT", 15*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	cfg.HTTPWriteTimeout, err = envDurationOr("HTTP_WRITE_TIMEOUT", 60*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	cfg.HTTPIdleTimeout, err = envDurationOr("HTTP_IDLE_TIMEOUT", 60*time.Second)
+	if err != nil {
+		return nil, err
+	}
 
 	cfg.SMTPHost = os.Getenv("SMTP_HOST")
 	cfg.SMTPPort = envOr("SMTP_PORT", "587")
@@ -152,10 +198,15 @@ func Load() (*Config, error) {
 	cfg.StorageAccessKey = os.Getenv("STORAGE_ACCESS_KEY")
 	cfg.StorageSecretKey = os.Getenv("STORAGE_SECRET_KEY")
 	cfg.StoragePublicURL = os.Getenv("STORAGE_PUBLIC_URL")
-	cfg.StorageForcePathStyle = strings.EqualFold(os.Getenv("STORAGE_FORCE_PATH_STYLE"), "true")
+	cfg.StorageForcePathStyle, err = envStrictBoolOr("STORAGE_FORCE_PATH_STYLE", false)
+	if err != nil {
+		return nil, err
+	}
 	cfg.StorageUploadTTL = envOr("STORAGE_UPLOAD_TTL", "1h")
 	cfg.StorageDownloadTTL = envOr("STORAGE_DOWNLOAD_TTL", "10m")
 	cfg.ReleaseKeyEncryptionKey = os.Getenv("RELEASE_KEY_ENCRYPTION_KEY")
+	cfg.ReleaseKeyEncryptionKeyPrevious = os.Getenv("RELEASE_KEY_ENCRYPTION_KEY_PREVIOUS")
+	cfg.LicenseKeyStorageMode = strings.ToLower(strings.TrimSpace(envOr("LICENSE_KEY_STORAGE_MODE", "dual")))
 	cfg.MaxReleaseSignSize = int64(envIntOr("MAX_RELEASE_SIGN_SIZE_MB", 500)) * 1024 * 1024
 
 	if cfg.DatabaseURL == "" {
@@ -194,7 +245,7 @@ func (c *Config) IsAdminEmail(email string) bool {
 // deriveLivemode decides whether the server should treat Stripe
 // events as live (real money) or test. Order of precedence:
 //
-//  1. STRIPE_LIVEMODE env (case-insensitive "true" or "1") wins.
+//  1. STRIPE_LIVEMODE env (strict true/false, validated by Load) wins.
 //  2. sk_live_… / rk_live_… secret key prefix → true.
 //  3. sk_test_… / rk_test_… → false.
 //  4. anything else (including unset) → false. Safe default:
@@ -207,7 +258,7 @@ func (c *Config) IsAdminEmail(email string) bool {
 // the full Load() side-effects (godotenv, ADMIN_EMAILS parsing, etc).
 func deriveLivemode(envVal string, envSet bool, secretKey string) bool {
 	if envSet {
-		return strings.EqualFold(envVal, "true") || envVal == "1"
+		return strings.EqualFold(strings.TrimSpace(envVal), "true")
 	}
 	return strings.HasPrefix(secretKey, "sk_live_") ||
 		strings.HasPrefix(secretKey, "rk_live_")
@@ -261,10 +312,33 @@ func (c *Config) ValidateSecurityDefaults() (warnings []string, fatal []string) 
 	}
 
 	if c.IsProduction() {
-		// Must have at least one admin
-		if len(c.AdminEmails) == 0 {
-			warnings = append(warnings, "SECURITY: ADMIN_EMAILS is empty — no one can access the admin panel")
+		if c.RedisURL == "" {
+			fatal = append(fatal, "REDIS_URL is required in production")
 		}
+		if len(c.OTPPepper) < 32 {
+			fatal = append(fatal, "OTP_PEPPER must be at least 32 characters in production")
+		}
+		if len(c.MetricsToken) < 32 {
+			fatal = append(fatal, "METRICS_TOKEN must be at least 32 characters in production")
+		}
+		if c.ReleaseKeyEncryptionKey == "" {
+			fatal = append(fatal, "RELEASE_KEY_ENCRYPTION_KEY is required in production")
+		}
+	}
+	if c.SetupEnabled && len(c.BootstrapSecret) < 32 {
+		fatal = append(fatal, "BOOTSTRAP_SECRET must be at least 32 characters when SETUP_ENABLED=true")
+	}
+	if c.SetupEnabled && len(c.OTPPepper) < 32 {
+		fatal = append(fatal, "OTP_PEPPER must be at least 32 characters when SETUP_ENABLED=true")
+	}
+	if c.HTTPMaxBodyBytes <= 0 {
+		fatal = append(fatal, "HTTP_MAX_BODY_BYTES must be greater than zero")
+	}
+	if c.HTTPReadHeaderTimeout <= 0 || c.HTTPReadTimeout <= 0 || c.HTTPWriteTimeout <= 0 || c.HTTPIdleTimeout <= 0 {
+		fatal = append(fatal, "HTTP timeout values must be greater than zero")
+	}
+	if c.LicenseKeyStorageMode != "dual" && c.LicenseKeyStorageMode != "ciphertext_only" {
+		fatal = append(fatal, "LICENSE_KEY_STORAGE_MODE must be 'dual' or 'ciphertext_only'")
 	}
 
 	if c.IsDevLoginAllowed() {
@@ -290,6 +364,8 @@ func (c *Config) ValidateSecurityDefaults() (warnings []string, fatal []string) 
 	// (release signing needs it) AND validated even when only set without
 	// storage (license-key encryption uses it independently).
 	switch {
+	case c.IsProduction() && c.ReleaseKeyEncryptionKey == "":
+		// Reported above with the production-specific contract.
 	case c.IsStorageEnabled() && c.ReleaseKeyEncryptionKey == "":
 		fatal = append(fatal, "RELEASE_KEY_ENCRYPTION_KEY is required when storage is enabled — generate via: openssl rand -hex 32")
 	case c.ReleaseKeyEncryptionKey == "":
@@ -302,6 +378,17 @@ func (c *Config) ValidateSecurityDefaults() (warnings []string, fatal []string) 
 	default:
 		if _, err := hex.DecodeString(c.ReleaseKeyEncryptionKey); err != nil {
 			fatal = append(fatal, "RELEASE_KEY_ENCRYPTION_KEY is not valid hex: "+err.Error())
+		}
+	}
+	if c.ReleaseKeyEncryptionKeyPrevious != "" {
+		if c.ReleaseKeyEncryptionKey == "" {
+			fatal = append(fatal, "RELEASE_KEY_ENCRYPTION_KEY_PREVIOUS requires RELEASE_KEY_ENCRYPTION_KEY")
+		} else if len(c.ReleaseKeyEncryptionKeyPrevious) != 64 {
+			fatal = append(fatal, "RELEASE_KEY_ENCRYPTION_KEY_PREVIOUS must be exactly 64 hex chars")
+		} else if _, err := hex.DecodeString(c.ReleaseKeyEncryptionKeyPrevious); err != nil {
+			fatal = append(fatal, "RELEASE_KEY_ENCRYPTION_KEY_PREVIOUS is not valid hex: "+err.Error())
+		} else if c.ReleaseKeyEncryptionKeyPrevious == c.ReleaseKeyEncryptionKey {
+			fatal = append(fatal, "RELEASE_KEY_ENCRYPTION_KEY_PREVIOUS must differ from the current key")
 		}
 	}
 
@@ -331,4 +418,47 @@ func envFloatOr(key string, fallback float64) float64 {
 		}
 	}
 	return fallback
+}
+
+func parseStrictBool(key, value string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s must be exactly 'true' or 'false'", key)
+	}
+}
+
+func envStrictBoolOr(key string, fallback bool) (bool, error) {
+	value, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(value) == "" {
+		return fallback, nil
+	}
+	return parseStrictBool(key, value)
+}
+
+func envDurationOr(key string, fallback time.Duration) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s must be a positive Go duration", key)
+	}
+	return d, nil
+}
+
+func envInt64Or(key string, fallback int64) (int64, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return n, nil
 }

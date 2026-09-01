@@ -31,7 +31,7 @@ func NewWebhookService(s *store.Store, logger *slog.Logger, httpTimeout time.Dur
 	return &WebhookService{
 		store:      s,
 		logger:     logger,
-		client:     &http.Client{Timeout: httpTimeout},
+		client:     newWebhookHTTPClient(httpTimeout),
 		maxRetries: maxRetries,
 		sem:        make(chan struct{}, 20), // max 20 concurrent deliveries
 	}
@@ -95,6 +95,10 @@ func (s *WebhookService) DispatchWithLog(ctx context.Context, productID, event s
 
 func (s *WebhookService) deliver(wh *model.Webhook, delivery *model.WebhookDelivery) {
 	ctx := context.Background()
+	if err := validateWebhookURL(ctx, wh.URL); err != nil {
+		s.failDelivery(ctx, delivery, 0, "webhook destination rejected")
+		return
+	}
 	body, _ := json.Marshal(delivery.Payload)
 	sig := signPayload(body, wh.Secret)
 

@@ -84,11 +84,11 @@ Stripe 端到端集成，**三层可靠性保障** — Webhook、成功页验证
 
 ### 🛡️ 安全
 
-邮箱 OTP 登录（常量时间哈希验证），基于数据库的每次请求角色权限检查，暴力破解防护，速率限制，HMAC 签名 Webhook，SameSite Cookie，HSTS，启动时拒绝弱密钥。License verify 端点将所有"license-knowable"失败统一为 404，关闭 `license_key` 枚举 oracle。Idempotency-Key 中间件防止重试导致的重复执行。
+邮箱 OTP 与本地管理员密码/恢复码登录，基于数据库的每次请求角色权限检查，生产环境 Redis fail-closed 限流，HMAC 签名 Webhook、SSRF 安全投递、SameSite Cookie、HSTS，以及启动时拒绝弱密钥。License verify 端点将所有"license-knowable"失败统一为 404，关闭 `license_key` 枚举 oracle。Idempotency-Key 中间件防止重试导致的重复执行。
 
 ### 🌍 自托管
 
-单个 Go 二进制文件 + PostgreSQL +（可选）S3 兼容存储用于 release 二进制。无需 Redis，无需微服务。启动时自动迁移。首次运行有安装向导。支持自定义品牌、邮件模板和国际化（内置中英文）。
+单个 Go 二进制文件 + PostgreSQL；生产环境使用无持久化 Redis，S3 兼容制品存储仍为可选。启动时自动迁移，首次初始化通过受控的一次性 API 完成。支持自定义品牌、邮件模板和国际化（内置中英文）。
 
 <br />
 
@@ -103,7 +103,7 @@ curl -O https://raw.githubusercontent.com/tabloy/keygate/main/.env.example
 cp .env.example .env
 
 # 2. 设置密钥
-# 编辑 .env：设置 JWT_SECRET 和 LICENSE_SIGNING_KEY（openssl rand -hex 32）
+# 按 .env.example 设置全部生产安全密钥。
 
 # 3. 启动
 docker compose up -d
@@ -117,7 +117,7 @@ cd keygate && cp .env.example .env
 make build && ./bin/keygate
 ```
 
-打开 **http://localhost:9000** — 安装向导会引导你完成初始配置。
+生产环境首次启动前先阅读[生产安全与密钥迁移](docs/production-security.md)，完成初始化后打开 **http://localhost:9000** 登录。
 
 > 📖 完整文档、部署指南和 SDK 示例请访问 **[keygate.app/docs](https://keygate.app/docs)**
 

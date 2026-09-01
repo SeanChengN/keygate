@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/tabloy/keygate/internal/model"
@@ -55,7 +56,6 @@ func (s *Store) IncrementUsageCounterWithLimit(ctx context.Context, licenseID, f
 	if err != nil {
 		return nil, false, err
 	}
-
 	var currentUsed int64
 	err = tx.NewRaw(`
 		SELECT used FROM usage_counters
@@ -64,6 +64,9 @@ func (s *Store) IncrementUsageCounterWithLimit(ctx context.Context, licenseID, f
 	`, licenseID, feature, period, periodKey).Scan(ctx, &currentUsed)
 	if err != nil {
 		return nil, false, err
+	}
+	if quantity <= 0 || currentUsed > math.MaxInt64-quantity {
+		return nil, false, fmt.Errorf("usage quantity would overflow counter")
 	}
 
 	if limit > 0 && currentUsed+quantity > limit {
