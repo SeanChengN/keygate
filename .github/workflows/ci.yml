@@ -49,7 +49,9 @@ jobs:
         run: go test -count=1 -run "Atomic" ./internal/store/
 
       - name: Build
-        run: go build -o /dev/null ./cmd/server
+        run: |
+          go build -o /dev/null ./cmd/server
+          go build -o /dev/null ./cmd/admin-recover
 
       - name: Vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...

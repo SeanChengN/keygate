@@ -26,6 +26,23 @@ password hash is empty. Afterward, all password changes require the current
 password; rotate recovery codes and store the returned codes offline before
 relying on password-only emergency access.
 
+If an upgraded installation has no SMTP, no existing administrator password,
+no recovery codes, and no valid administrator session, use the local operator
+recovery command. It is a separate binary with no HTTP route, refuses to run as
+the normal Keygate UID, and accepts the new password only from an interactive
+terminal. Run it from the deployment host as a one-off root container:
+
+```sh
+docker compose --env-file .env run --rm --no-deps --user 0:0 \
+  --entrypoint keygate-admin-recover keygate --email owner@example.com
+```
+
+The command atomically replaces the Argon2id password and all recovery codes,
+increments `auth_generation`, revokes refresh tokens, and writes an
+`admin_operator_recovered` audit event. It prints the new recovery codes once;
+store them offline. Never pass a password through command arguments, standard
+input redirection, environment variables, or shell history.
+
 ## One-time initialization
 
 Setup is closed unless `SETUP_ENABLED=true` and a strong `BOOTSTRAP_SECRET` is

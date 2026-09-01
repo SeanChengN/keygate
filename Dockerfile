@@ -23,6 +23,8 @@ RUN CGO_ENABLED=0 go build -trimpath \
       -X github.com/tabloy/keygate/internal/version.Commit=${COMMIT} \
       -X github.com/tabloy/keygate/internal/version.BuildDate=${BUILD_DATE}" \
     -o /keygate ./cmd/server
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
+    -o /keygate-admin-recover ./cmd/admin-recover
 
 # ── Runtime ──
 FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
@@ -31,6 +33,7 @@ RUN apk add --no-cache ca-certificates tzdata curl \
     && adduser -S -D -H -G keygate keygate
 WORKDIR /app
 COPY --from=backend /keygate /usr/local/bin/keygate
+COPY --from=backend /keygate-admin-recover /usr/local/bin/keygate-admin-recover
 COPY --from=backend /app/db/migrations /app/db/migrations
 COPY --from=backend /app/web/dist /app/web/dist
 COPY --from=backend /app/docs /app/docs
