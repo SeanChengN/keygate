@@ -513,6 +513,9 @@ func main() {
 		lic.POST("/download", releasePublicH.Download)
 	}
 
+	feedRateLimit := max(cfg.RateLimitAPI*4, 240)
+	registerReleaseFeedRoutes(v1, releasePublicH, feedRateLimit)
+
 	// Public invite acceptance — the token is proof of email
 	// ownership (we mailed it to the invitee), so no session auth
 	// is required, but we DO want rate limiting against token
@@ -994,6 +997,32 @@ func main() {
 		log.Fatalf("server forced shutdown: %v", err)
 	}
 	log.Println("Server exited gracefully")
+}
+
+func registerReleaseFeedRoutes(
+	v1 *gin.RouterGroup,
+	releasePublicH *handler.ReleasePublicHandler,
+	feedRateLimit int,
+) {
+	feedMW := []gin.HandlerFunc{
+		middleware.RateLimitByIP(feedRateLimit, time.Minute),
+	}
+	v1.GET("/releases/:product_slug/feed.xml", append(feedMW, releasePublicH.FeedSparkle)...)
+	v1.GET("/releases/:product_slug/feed.json", append(feedMW, releasePublicH.FeedVelopack)...)
+	v1.GET("/releases/:product_slug/upgrade.json", append(feedMW, releasePublicH.FeedTauri)...)
+
+	// Old /releases/feed.* paths were never product-specific. Keep the
+	// upstream hard cutover response so clients get an actionable migration
+	// error instead of an ambiguous 404.
+	feedGone := func(c *gin.Context) {
+		response.Err(c, http.StatusGone, "FEED_PATH_REMOVED",
+			"feed URL changed: use /api/v1/releases/{product_slug}/feed.xml|feed.json|upgrade.json. "+
+				"Feeds are public; trust is established via the artifact's ed25519 signature.")
+	}
+	v1.GET("/releases/feed.xml", feedGone)
+	v1.GET("/releases/feed.json", feedGone)
+	v1.GET("/releases/upgrade.json", feedGone)
+	v1.GET("/releases/feed", feedGone)
 }
 
 func initializeReleaseStorage(cfg *config.Config) (storage.Storage, error) {
