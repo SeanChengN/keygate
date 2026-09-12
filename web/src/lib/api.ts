@@ -476,6 +476,7 @@ export const admin = {
     releaseId: string,
     data: {
       platform: string
+      artifact_kind?: "application" | "help-media"
       content_type?: string
       expected_size?: number
       filename?: string
@@ -959,6 +960,7 @@ export interface ReleaseArtifact {
   id: string
   release_id: string
   platform: string
+  artifact_kind: "application" | "help-media"
   file_key: string
   file_size: number
   sha256: string

@@ -74,15 +74,16 @@ func NewReleasePublicHandler(c ReleasePublicConfig) *ReleasePublicHandler {
 
 // POST /api/v1/license/download
 //
-// Body: { license_key, platform, version?, channel? }
+// Body: { license_key, platform, version?, channel?, artifact_kind? }
 func (h *ReleasePublicHandler) Download(c *gin.Context) {
 	var req struct {
-		LicenseKey string `json:"license_key" binding:"required"`
-		Identifier string `json:"identifier"`
-		ProductID  string `json:"product_id"`
-		Platform   string `json:"platform" binding:"required"`
-		Version    string `json:"version"`
-		Channel    string `json:"channel"`
+		LicenseKey   string `json:"license_key" binding:"required"`
+		Identifier   string `json:"identifier"`
+		ProductID    string `json:"product_id"`
+		Platform     string `json:"platform" binding:"required"`
+		ArtifactKind string `json:"artifact_kind"`
+		Version      string `json:"version"`
+		Channel      string `json:"channel"`
 		deviceProofRequest
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -91,13 +92,14 @@ func (h *ReleasePublicHandler) Download(c *gin.Context) {
 	}
 	productID, _ := c.Get("product_id")
 	out, err := h.svc.GenerateDownload(c.Request.Context(), service.DownloadInput{
-		LicenseKey:  req.LicenseKey,
-		ProductID:   firstNonEmpty(str(productID), strings.TrimSpace(req.ProductID)),
-		Identifier:  strings.TrimSpace(req.Identifier),
-		Version:     req.Version,
-		Platform:    req.Platform,
-		Channel:     req.Channel,
-		DeviceProof: req.deviceProofRequest.serviceInput(),
+		LicenseKey:   req.LicenseKey,
+		ProductID:    firstNonEmpty(str(productID), strings.TrimSpace(req.ProductID)),
+		Identifier:   strings.TrimSpace(req.Identifier),
+		Version:      req.Version,
+		Platform:     req.Platform,
+		ArtifactKind: req.ArtifactKind,
+		Channel:      req.Channel,
+		DeviceProof:  req.deviceProofRequest.serviceInput(),
 	})
 	if err != nil {
 		writeAppErr(c, err)
@@ -192,7 +194,8 @@ func (h *ReleasePublicHandler) fetchPublishedFeedReleases(c *gin.Context, req fe
 		// linux-armhf), skip it for this platform's feed.
 		var artifact *model.ReleaseArtifact
 		for _, a := range rel.Artifacts {
-			if a.Platform == req.platform && a.IsUploaded() {
+			if a.Platform == req.platform &&
+				(a.ArtifactKind == "" || a.ArtifactKind == model.ReleaseArtifactKindApplication) && a.IsUploaded() {
 				artifact = a
 				break
 			}
