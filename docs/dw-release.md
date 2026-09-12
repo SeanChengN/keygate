@@ -4,6 +4,8 @@
 
 自维护修改必须继续保留 AGPL、NOTICE、原 Go module 路径及所有界面的 “Powered by Keygate” 署名。
 
+WMS 应用与帮助媒体共用 Release 时，发布端和客户端必须遵守 [Release 制品类型与下载契约](release-artifact-kinds.md)。其中省略 `artifact_kind` 的旧客户端兼容、媒体显式版本和独立设备证明动作属于发布门禁，不得在后续同步上游时移除。
+
 ## 1. 提交前验证
 
 在本仓库根目录执行：

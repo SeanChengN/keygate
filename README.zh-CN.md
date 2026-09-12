@@ -58,7 +58,7 @@
 
 ### 🚀 软件分发
 
-通过授权门禁和设备证明绑定的下载接口向已安装客户端推送签名更新。每个 release 下挂多平台二进制，使用**原子发布门控**避免泄露半上传状态，并支持 **yank** 即时回滚。每产品 **Ed25519 签名密钥**使用 AES-256-GCM 与 HKDF 派生子密钥加密落盘，服务端独立计算 SHA-256。系统不注册公开 Sparkle、Velopack 或 Tauri feed；每次制品下载都必须提交有效授权和新的设备证明。每产品仍可设置 `minimum_supported_version` 强制升级下限。
+通过授权门禁和设备证明绑定的下载接口向已安装客户端推送签名更新。同一 release 和平台可分别保存 `application` 与 `help-media` 制品；旧客户端省略 `artifact_kind` 时仍按应用包处理。帮助媒体下载必须指定来源版本，并使用独立的 `download_help_media` 证明动作。多平台制品使用**原子发布门控**避免泄露半上传状态，并支持 **yank** 即时回滚。每产品 **Ed25519 签名密钥**使用 AES-256-GCM 与 HKDF 派生子密钥加密落盘，服务端独立计算 SHA-256。公开 Sparkle、Velopack 或 Tauri feed 只选择应用制品；每次受保护制品下载都必须提交有效授权和新的设备证明。每产品仍可设置 `minimum_supported_version` 强制升级下限。
 
 对象存储兼容 S3 — Cloudflare R2、AWS S3、MinIO 等任何说 SigV4 的存储。Presigned URL 浏览器直传（不经 Keygate 中转），license 校验后短期下载 URL。
 

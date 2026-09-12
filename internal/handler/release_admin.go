@@ -118,7 +118,7 @@ func (h *ReleaseAdminHandler) Create(c *gin.Context) {
 
 // POST /api/v1/admin/releases/:id/artifacts
 //
-// Body: { platform, content_type?, expected_size?, filename? }
+// Body: { platform, artifact_kind?, content_type?, expected_size?, filename? }
 func (h *ReleaseAdminHandler) AddArtifact(c *gin.Context) {
 	id := c.Param("id")
 	if !h.checkReleaseScope(c, id) {
@@ -126,6 +126,7 @@ func (h *ReleaseAdminHandler) AddArtifact(c *gin.Context) {
 	}
 	var req struct {
 		Platform     string `json:"platform" binding:"required"`
+		ArtifactKind string `json:"artifact_kind"`
 		ContentType  string `json:"content_type"`
 		ExpectedSize int64  `json:"expected_size"`
 		Filename     string `json:"filename"`
@@ -150,6 +151,7 @@ func (h *ReleaseAdminHandler) AddArtifact(c *gin.Context) {
 	out, err := h.svc.AddArtifact(c.Request.Context(), service.AddArtifactInput{
 		ReleaseID:    id,
 		Platform:     req.Platform,
+		ArtifactKind: req.ArtifactKind,
 		ContentType:  req.ContentType,
 		ExpectedSize: req.ExpectedSize,
 		Filename:     req.Filename,
@@ -162,7 +164,7 @@ func (h *ReleaseAdminHandler) AddArtifact(c *gin.Context) {
 	h.store.Audit(c.Request.Context(), &model.AuditLog{
 		Entity: "release_artifact", EntityID: out.Artifact.ID, Action: "added",
 		ActorType: "admin", ActorID: adminID(c), IPAddress: c.ClientIP(),
-		Changes: map[string]any{"release_id": id, "platform": req.Platform},
+		Changes: map[string]any{"release_id": id, "platform": req.Platform, "artifact_kind": out.Artifact.ArtifactKind},
 	})
 	response.Created(c, out)
 }

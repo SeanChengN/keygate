@@ -629,7 +629,7 @@ type Release struct {
 //
 // Each artifact carries its own sha256 + ed25519_sig (per-platform binaries
 // have different bytes, so signatures must be per-artifact). One artifact
-// per (release_id, platform) tuple — enforced by DB UNIQUE.
+// per (release_id, platform, artifact_kind) tuple — enforced by DB UNIQUE.
 //
 // Ed25519Sig format contract:
 //
@@ -643,7 +643,8 @@ type ReleaseArtifact struct {
 	ID        string `bun:",pk" json:"id"`
 	ReleaseID string `bun:",notnull" json:"release_id"`
 
-	Platform string `bun:",notnull" json:"platform"`
+	Platform     string `bun:",notnull" json:"platform"`
+	ArtifactKind string `bun:",notnull,nullzero,default:'application'" json:"artifact_kind"`
 
 	FileKey     string `bun:",notnull,default:''" json:"file_key"`
 	FileSize    int64  `bun:",notnull,default:0" json:"file_size"`
@@ -660,6 +661,11 @@ type ReleaseArtifact struct {
 
 	Release *Release `bun:"rel:belongs-to,join:release_id=id" json:"-"`
 }
+
+const (
+	ReleaseArtifactKindApplication = "application"
+	ReleaseArtifactKindHelpMedia   = "help-media"
+)
 
 // IsUploaded reports whether the artifact has both a storage key and a
 // sha256, meaning the upload+finalize cycle is complete and the artifact

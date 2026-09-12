@@ -101,6 +101,7 @@ type CreateReleaseInput struct {
 type AddArtifactInput struct {
 	ReleaseID    string
 	Platform     string
+	ArtifactKind string
 	ContentType  string
 	ExpectedSize int64
 	Filename     string
@@ -128,23 +129,25 @@ type FinalizeArtifactInput struct {
 
 // DownloadInput is the license-gated download request.
 type DownloadInput struct {
-	LicenseKey  string
-	ProductID   string
-	Identifier  string
-	Version     string // empty = latest in channel
-	Platform    string
-	Channel     string
-	DeviceProof DeviceProofInput
+	LicenseKey   string
+	ProductID    string
+	Identifier   string
+	Version      string // empty = latest in channel
+	Platform     string
+	ArtifactKind string
+	Channel      string
+	DeviceProof  DeviceProofInput
 }
 
 // DownloadResult is what's returned to the client on successful authz.
 type DownloadResult struct {
-	URL       string    `json:"url"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Version   string    `json:"version"`
-	Platform  string    `json:"platform"`
-	SHA256    string    `json:"sha256"`
-	FileSize  int64     `json:"file_size"`
+	URL          string    `json:"url"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	Version      string    `json:"version"`
+	Platform     string    `json:"platform"`
+	ArtifactKind string    `json:"artifact_kind"`
+	SHA256       string    `json:"sha256"`
+	FileSize     int64     `json:"file_size"`
 }
 
 // ─── Sentinel errors ───
@@ -201,6 +204,36 @@ func validatePlatform(p string) error {
 		return nil
 	}
 	return invalidPlatformError()
+}
+
+func normalizeArtifactKind(kind string) (string, error) {
+	if kind == "" {
+		return model.ReleaseArtifactKindApplication, nil
+	}
+	if kind == model.ReleaseArtifactKindApplication || kind == model.ReleaseArtifactKindHelpMedia {
+		return kind, nil
+	}
+	return "", errors.New("invalid artifact_kind (allowed: application, help-media)")
+}
+
+func downloadProofAction(artifactKind string) string {
+	if artifactKind == model.ReleaseArtifactKindHelpMedia {
+		return "download_help_media"
+	}
+	return "download"
+}
+
+func findReleaseArtifact(rel *model.Release, platform, artifactKind string) *model.ReleaseArtifact {
+	for _, artifact := range rel.Artifacts {
+		storedKind := artifact.ArtifactKind
+		if storedKind == "" {
+			storedKind = model.ReleaseArtifactKindApplication
+		}
+		if artifact.Platform == platform && storedKind == artifactKind && artifact.IsUploaded() {
+			return artifact
+		}
+	}
+	return nil
 }
 
 // validateVersion combines our regex with semver.IsValid for full
@@ -271,6 +304,10 @@ func (s *ReleaseService) AddArtifact(ctx context.Context, in AddArtifactInput) (
 	if in.ContentType == "" {
 		in.ContentType = "application/octet-stream"
 	}
+	artifactKind, kindErr := normalizeArtifactKind(in.ArtifactKind)
+	if kindErr != nil {
+		return nil, apperr.New(400, "INVALID_ARTIFACT_KIND", kindErr.Error())
+	}
 
 	// Look up the parent release for product slug + draft check.
 	rel, err := s.store.FindReleaseByID(ctx, in.ReleaseID)
@@ -292,19 +329,20 @@ func (s *ReleaseService) AddArtifact(ctx context.Context, in AddArtifactInput) (
 	if slug == "" {
 		slug = prod.ID
 	}
-	fileKey := buildFileKey(slug, in.Platform, rel.Version, in.Filename)
+	fileKey := buildFileKey(slug, in.Platform, artifactKind, rel.Version, in.Filename)
 
 	artifact := &model.ReleaseArtifact{
-		ReleaseID:   in.ReleaseID,
-		Platform:    in.Platform,
-		FileKey:     fileKey,
-		ContentType: in.ContentType,
+		ReleaseID:    in.ReleaseID,
+		Platform:     in.Platform,
+		ArtifactKind: artifactKind,
+		FileKey:      fileKey,
+		ContentType:  in.ContentType,
 	}
 	if err := s.store.CreateArtifact(ctx, artifact); err != nil {
 		switch {
 		case errors.Is(err, store.ErrArtifactAlreadyExists):
 			return nil, apperr.New(409, "ARTIFACT_EXISTS",
-				"this release already has an artifact for this platform; delete it first")
+				"this release already has an artifact for this platform and kind; delete it first")
 		case errors.Is(err, store.ErrReleaseNotFound):
 			return nil, apperr.New(404, "RELEASE_NOT_FOUND", "release not found")
 		case errors.Is(err, store.ErrReleaseNotPublishable):
@@ -680,6 +718,13 @@ func (s *ReleaseService) GenerateDownload(ctx context.Context, in DownloadInput)
 	if in.Channel == "" {
 		in.Channel = model.ReleaseChannelStable
 	}
+	artifactKind, kindErr := normalizeArtifactKind(in.ArtifactKind)
+	if kindErr != nil {
+		return nil, apperr.New(400, "INVALID_ARTIFACT_KIND", kindErr.Error())
+	}
+	if artifactKind == model.ReleaseArtifactKindHelpMedia && in.Version == "" {
+		return nil, apperr.New(400, "MEDIA_VERSION_REQUIRED", "help-media downloads require an explicit release version")
+	}
 	if !model.IsValidReleaseChannel(in.Channel) {
 		return nil, apperr.New(400, "INVALID_CHANNEL", ErrReleaseInvalidChannel.Error())
 	}
@@ -697,7 +742,8 @@ func (s *ReleaseService) GenerateDownload(ctx context.Context, in DownloadInput)
 	if activationErr != nil {
 		return nil, licenseNotFound()
 	}
-	if proofErr := validateDeviceProof(ctx, s.store, in.DeviceProof, "download", in.LicenseKey,
+	proofAction := downloadProofAction(artifactKind)
+	if proofErr := validateDeviceProof(ctx, s.store, in.DeviceProof, proofAction, in.LicenseKey,
 		in.Identifier, lic.ProductID, in.Platform, in.Channel, in.Version, activation.DevicePublicKey); proofErr != nil {
 		return nil, proofErr
 	}
@@ -730,16 +776,10 @@ func (s *ReleaseService) GenerateDownload(ctx context.Context, in DownloadInput)
 	}
 
 	// Find the artifact for the requested platform within this release.
-	var artifact *model.ReleaseArtifact
-	for _, a := range rel.Artifacts {
-		if a.Platform == in.Platform && a.IsUploaded() {
-			artifact = a
-			break
-		}
-	}
+	artifact := findReleaseArtifact(rel, in.Platform, artifactKind)
 	if artifact == nil {
 		return nil, apperr.New(404, "PLATFORM_NOT_AVAILABLE",
-			fmt.Sprintf("release %s has no artifact for platform %q", rel.Version, in.Platform))
+			fmt.Sprintf("release %s has no %s artifact for platform %q", rel.Version, artifactKind, in.Platform))
 	}
 
 	url, err := s.storage.PresignedGet(ctx, artifact.FileKey, DownloadFilename(rel, artifact), s.downloadTTL)
@@ -751,12 +791,13 @@ func (s *ReleaseService) GenerateDownload(ctx context.Context, in DownloadInput)
 	}
 
 	return &DownloadResult{
-		URL:       url,
-		ExpiresAt: time.Now().Add(s.downloadTTL),
-		Version:   rel.Version,
-		Platform:  artifact.Platform,
-		SHA256:    artifact.SHA256,
-		FileSize:  artifact.FileSize,
+		URL:          url,
+		ExpiresAt:    time.Now().Add(s.downloadTTL),
+		Version:      rel.Version,
+		Platform:     artifact.Platform,
+		ArtifactKind: artifactKind,
+		SHA256:       artifact.SHA256,
+		FileSize:     artifact.FileSize,
 	}, nil
 }
 
@@ -904,15 +945,19 @@ func (s *ReleaseService) ListForFeed(ctx context.Context, productID, channel, pl
 // buildFileKey produces the storage path for an artifact.
 //
 //	releases/{product_slug}/{version}/{platform}{ext}
-func buildFileKey(productSlug, platform, version, originalFilename string) string {
+func buildFileKey(productSlug, platform, artifactKind, version, originalFilename string) string {
 	ext := normalizeExt(originalFilename)
 	if !validExtension(ext) {
 		ext = ""
 	}
+	artifactName := safeKeyComponent(platform)
+	if artifactKind != "" && artifactKind != model.ReleaseArtifactKindApplication {
+		artifactName += "-" + safeKeyComponent(artifactKind)
+	}
 	return fmt.Sprintf("releases/%s/%s/%s%s",
 		safeKeyComponent(productSlug),
 		safeKeyComponent(version),
-		safeKeyComponent(platform),
+		artifactName,
 		ext)
 }
 
@@ -932,7 +977,7 @@ func validExtension(ext string) bool {
 		".tgz", ".tar", ".gz", ".xz",
 		".exe", ".msi", ".nupkg",
 		".appimage", ".deb", ".rpm", ".snap", ".flatpak",
-		".bin", ".app", ".7z":
+		".bin", ".app", ".7z", ".wmsupdate", ".wmsmedia":
 		return true
 	}
 	return false
@@ -955,10 +1000,14 @@ func DownloadFilename(rel *model.Release, a *model.ReleaseArtifact) string {
 	if prefix == "" {
 		prefix = "release"
 	}
+	artifactName := safeKeyComponent(a.Platform)
+	if a.ArtifactKind != "" && a.ArtifactKind != model.ReleaseArtifactKindApplication {
+		artifactName += "-" + safeKeyComponent(a.ArtifactKind)
+	}
 	return fmt.Sprintf("%s-%s-%s%s",
 		safeKeyComponent(prefix),
 		safeKeyComponent(rel.Version),
-		safeKeyComponent(a.Platform),
+		artifactName,
 		ext)
 }
 
@@ -993,7 +1042,12 @@ func (s *ReleaseService) dispatchWebhook(ctx context.Context, rel *model.Release
 		return
 	}
 	platforms := make([]string, 0, len(rel.Artifacts))
+	seenPlatforms := make(map[string]struct{}, len(rel.Artifacts))
 	for _, a := range rel.Artifacts {
+		if _, exists := seenPlatforms[a.Platform]; exists {
+			continue
+		}
+		seenPlatforms[a.Platform] = struct{}{}
 		platforms = append(platforms, a.Platform)
 	}
 	s.webhook.Dispatch(ctx, rel.ProductID, event, map[string]any{

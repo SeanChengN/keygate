@@ -391,6 +391,7 @@ func (s *Store) ListPublishedReleasesForFeed(ctx context.Context, productID, cha
             SELECT 1 FROM release_artifacts ra
             WHERE ra.release_id = release.id
               AND ra.platform   = ?
+              AND ra.artifact_kind = 'application'
               AND ra.file_key  <> ''
               AND ra.sha256    <> ''
         )`, platform)
@@ -419,7 +420,7 @@ func (s *Store) ListPublishedReleasesForFeed(ctx context.Context, productID, cha
 //   - Publisher's UPDATE acquires the row-X lock first → we wait → after
 //     publisher commits, status='published' so we return ErrReleaseNotPublishable.
 //
-// Returns ErrArtifactAlreadyExists if the (release_id, platform) tuple
+// Returns ErrArtifactAlreadyExists if the (release_id, platform, artifact_kind) tuple
 // already exists.
 func (s *Store) CreateArtifact(ctx context.Context, a *model.ReleaseArtifact) error {
 	if a.ID == "" {
@@ -472,7 +473,7 @@ func (s *Store) FindArtifact(ctx context.Context, id string) (*model.ReleaseArti
 func (s *Store) FindArtifactByPlatform(ctx context.Context, releaseID, platform string) (*model.ReleaseArtifact, error) {
 	a := new(model.ReleaseArtifact)
 	err := s.DB.NewSelect().Model(a).
-		Where("release_artifact.release_id = ? AND release_artifact.platform = ?", releaseID, platform).
+		Where("release_artifact.release_id = ? AND release_artifact.platform = ? AND release_artifact.artifact_kind = ?", releaseID, platform, model.ReleaseArtifactKindApplication).
 		Scan(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrArtifactNotFound

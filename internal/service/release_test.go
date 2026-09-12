@@ -294,10 +294,10 @@ func TestBuildFileKey(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := buildFileKey(c.productSlug, c.platform, c.version, c.filename)
+			got := buildFileKey(c.productSlug, c.platform, model.ReleaseArtifactKindApplication, c.version, c.filename)
 			if got != c.want {
-				t.Errorf("buildFileKey(%q,%q,%q,%q):\n  got  %q\n  want %q",
-					c.productSlug, c.platform, c.version, c.filename, got, c.want)
+				t.Errorf("buildFileKey(%q,%q,%q,%q,%q):\n  got  %q\n  want %q",
+					c.productSlug, c.platform, model.ReleaseArtifactKindApplication, c.version, c.filename, got, c.want)
 			}
 			if !strings.HasPrefix(got, "releases/") {
 				t.Errorf("missing releases/ prefix: %q", got)
@@ -394,6 +394,59 @@ func TestSafeKeyComponent(t *testing.T) {
 		if got := safeKeyComponent(in); got != want {
 			t.Errorf("safeKeyComponent(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestArtifactKindsAndMediaPaths(t *testing.T) {
+	if got, err := normalizeArtifactKind(""); err != nil || got != model.ReleaseArtifactKindApplication {
+		t.Fatalf("legacy empty artifact kind was not normalized: %q, %v", got, err)
+	}
+	if got, err := normalizeArtifactKind(model.ReleaseArtifactKindHelpMedia); err != nil || got != model.ReleaseArtifactKindHelpMedia {
+		t.Fatalf("help media artifact kind was rejected: %q, %v", got, err)
+	}
+	if _, err := normalizeArtifactKind("unknown"); err == nil {
+		t.Fatal("unknown artifact kind was accepted")
+	}
+	if got := buildFileKey("wms", "linux-x64", model.ReleaseArtifactKindHelpMedia, "0.21.13", "media.wmsmedia"); got != "releases/wms/0.21.13/linux-x64-help-media.wmsmedia" {
+		t.Fatalf("unexpected media storage key: %s", got)
+	}
+	got := DownloadFilename(
+		&model.Release{Name: "WMS", Version: "0.21.13"},
+		&model.ReleaseArtifact{Platform: "linux-x64", ArtifactKind: model.ReleaseArtifactKindHelpMedia, FileKey: "media.wmsmedia"},
+	)
+	if got != "WMS-0.21.13-linux-x64-help-media.wmsmedia" {
+		t.Fatalf("unexpected media download filename: %s", got)
+	}
+}
+
+func TestArtifactSelectionAndProofActionsStayTypeBound(t *testing.T) {
+	application := &model.ReleaseArtifact{
+		ID: "application", Platform: "linux-x64", ArtifactKind: model.ReleaseArtifactKindApplication,
+		FileKey: "application.wmsupdate", SHA256: strings.Repeat("a", 64),
+	}
+	media := &model.ReleaseArtifact{
+		ID: "media", Platform: "linux-x64", ArtifactKind: model.ReleaseArtifactKindHelpMedia,
+		FileKey: "media.wmsmedia", SHA256: strings.Repeat("b", 64),
+	}
+	legacyApplication := &model.ReleaseArtifact{
+		ID: "legacy", Platform: "windows-x64", FileKey: "legacy.wmsupdate", SHA256: strings.Repeat("c", 64),
+	}
+	release := &model.Release{Artifacts: []*model.ReleaseArtifact{media, application, legacyApplication}}
+	if got := findReleaseArtifact(release, "linux-x64", model.ReleaseArtifactKindApplication); got != application {
+		t.Fatal("application request selected the wrong same-platform artifact")
+	}
+	if got := findReleaseArtifact(release, "linux-x64", model.ReleaseArtifactKindHelpMedia); got != media {
+		t.Fatal("help-media request selected the wrong same-platform artifact")
+	}
+	if got := findReleaseArtifact(release, "windows-x64", model.ReleaseArtifactKindApplication); got != legacyApplication {
+		t.Fatal("legacy empty artifact kind was not selected as application")
+	}
+	if got := findReleaseArtifact(release, "windows-x64", model.ReleaseArtifactKindHelpMedia); got != nil {
+		t.Fatal("application artifact was replayed across the help-media type")
+	}
+	if downloadProofAction(model.ReleaseArtifactKindApplication) != "download" ||
+		downloadProofAction(model.ReleaseArtifactKindHelpMedia) != "download_help_media" {
+		t.Fatal("application and help-media downloads do not use distinct proof actions")
 	}
 }
 

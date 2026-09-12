@@ -62,6 +62,7 @@ import {
 import { formatDate } from "@/lib/utils"
 
 const PAGE_SIZE = 20
+const RELEASE_ARTIFACT_KINDS = ["application", "help-media"] as const
 
 export default function ReleasesPage() {
   const { t } = useI18n()
@@ -630,8 +631,10 @@ function ReleaseDetailDialog({ release, onClose }: { release: Release; onClose: 
   })
 
   const artifacts = rel.artifacts || []
-  const usedPlatforms = new Set(artifacts.map((a) => a.platform))
-  const remainingPlatforms = RELEASE_PLATFORMS.filter((p) => !usedPlatforms.has(p))
+  const usedArtifactSlots = new Set(artifacts.map((a) => `${a.artifact_kind || "application"}:${a.platform}`))
+  const hasRemainingArtifactSlots = RELEASE_ARTIFACT_KINDS.some((kind) =>
+    RELEASE_PLATFORMS.some((platform) => !usedArtifactSlots.has(`${kind}:${platform}`)),
+  )
 
   return (
     <Dialog open onOpenChange={onClose}>
@@ -674,10 +677,10 @@ function ReleaseDetailDialog({ release, onClose }: { release: Release; onClose: 
             )}
           </div>
 
-          {rel.status === "draft" && remainingPlatforms.length > 0 && (
+          {rel.status === "draft" && hasRemainingArtifactSlots && (
             <Button onClick={() => setAdding(true)} variant="outline" className="w-full">
               <Plus className="h-4 w-4 mr-2" />
-              {t("releases.addArtifactRemaining", { count: remainingPlatforms.length })}
+              {t("releases.addArtifact")}
             </Button>
           )}
         </div>
@@ -685,7 +688,7 @@ function ReleaseDetailDialog({ release, onClose }: { release: Release; onClose: 
         {adding && (
           <AddArtifactDialog
             release={rel}
-            availablePlatforms={remainingPlatforms}
+            existingArtifacts={artifacts}
             onClose={() => setAdding(false)}
             onAdded={() => {
               setAdding(false)
@@ -715,6 +718,9 @@ function ArtifactRow({
       <Badge variant="outline" className="font-mono text-[10px]">
         {artifact.platform}
       </Badge>
+      <Badge variant="secondary" className="font-mono text-[10px]">
+        {artifact.artifact_kind || "application"}
+      </Badge>
       <span className="text-muted-foreground text-xs flex-1 truncate">
         {ready
           ? `${formatBytes(artifact.file_size)} · sha256:${artifact.sha256.slice(0, 12)}…`
@@ -738,24 +744,33 @@ function ArtifactRow({
 
 function AddArtifactDialog({
   release,
-  availablePlatforms,
+  existingArtifacts,
   onClose,
   onAdded,
 }: {
   release: Release
-  availablePlatforms: readonly string[]
+  existingArtifacts: readonly ReleaseArtifact[]
   onClose: () => void
   onAdded: () => void
 }) {
   const { t } = useI18n()
-  const [platform, setPlatform] = useState(availablePlatforms[0] || "")
+  const [artifactKind, setArtifactKind] = useState<(typeof RELEASE_ARTIFACT_KINDS)[number]>("application")
+  const usedPlatforms = new Set(
+    existingArtifacts
+      .filter((artifact) => (artifact.artifact_kind || "application") === artifactKind)
+      .map((artifact) => artifact.platform),
+  )
+  const availablePlatforms = RELEASE_PLATFORMS.filter((candidate) => !usedPlatforms.has(candidate))
+  const [platform, setPlatform] = useState<(typeof RELEASE_PLATFORMS)[number] | "">(availablePlatforms[0] || "")
   const [file, setFile] = useState<File | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [progress, setProgress] = useState<"idle" | "init" | "uploading" | "finalizing">("idle")
   const [error, setError] = useState("")
 
   useEffect(() => {
-    if (!availablePlatforms.includes(platform) && availablePlatforms.length > 0) {
+    if (availablePlatforms.length === 0 && platform) {
+      setPlatform("")
+    } else if ((!platform || !availablePlatforms.includes(platform)) && availablePlatforms.length > 0) {
       setPlatform(availablePlatforms[0])
     }
   }, [availablePlatforms, platform])
@@ -775,6 +790,7 @@ function AddArtifactDialog({
       setProgress("init")
       const init = await admin.addArtifact(release.id, {
         platform,
+        artifact_kind: artifactKind,
         content_type: file.type || "application/octet-stream",
         expected_size: file.size,
         filename: file.name,
@@ -814,8 +830,31 @@ function AddArtifactDialog({
         </DialogHeader>
         <div className="space-y-4 py-2">
           <div className="space-y-2">
+            <Label>{t("releases.artifactKind")}</Label>
+            <Select
+              value={artifactKind}
+              onValueChange={(value) => setArtifactKind(value as (typeof RELEASE_ARTIFACT_KINDS)[number])}
+              disabled={busy}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {RELEASE_ARTIFACT_KINDS.map((kind) => (
+                  <SelectItem key={kind} value={kind}>
+                    {t(`releases.artifactKind.${kind}` as "releases.artifactKind.application")}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
             <Label>{t("releases.platform")}</Label>
-            <Select value={platform} onValueChange={setPlatform} disabled={busy}>
+            <Select
+              value={platform}
+              onValueChange={(value) => setPlatform(value as (typeof RELEASE_PLATFORMS)[number])}
+              disabled={busy}
+            >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
