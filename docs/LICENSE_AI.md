@@ -46,8 +46,8 @@ v0.1.4-dw.4 起，保存方案会覆盖该方案全部已绑定许可证的分�
 | 方法与路径 | 权限／作用 |
 | --- | --- |
 | `GET/PUT /products/{id}/ai-account` | 原 admin 权限；配置或查询脱敏账号状态 |
-| `GET/PUT /plans/{id}/ai` | 原 admin 权限；修改新签发默认值 |
-| `GET/PUT /licenses/{id}/ai` | admin 或 `licenses:write`；查询绑定／记录，调整此许可证额度；不接受更换分组 |
+| `GET/PUT /plans/{id}/ai` | 原 admin 权限；保存默认值并覆盖全部已绑定许可证 |
+| `GET/PUT /licenses/{id}/ai` | admin 或 `licenses:write`；查询绑定／记录，调整此许可证分组及额度 |
 | `POST /licenses/{id}/ai/reset_quota` | 清零总已用额度 |
 | `POST /licenses/{id}/ai/reset_rate` | 清零三个周期用量 |
 | `POST /licenses/{id}/ai/rotate` | 创建并发布替换 Key |

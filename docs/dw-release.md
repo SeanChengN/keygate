@@ -89,4 +89,4 @@ gh workflow run release.yml --ref main -f release_tag=$Tag
 cd E:\VSCode\Project\digital-warehousing-control-plane
 ```
 
-后续只按该仓库 `deploy/keygate/README.md` 的“Keygate 代码发布后的完整升级流程”构建多架构镜像、记录 digest、备份、升级及验收。不要直接使用本仓库 `docker-compose.yml` 中的 `latest` 部署生产环境。
+后续只按该仓库 `deploy/keygate/README.md` 的“Keygate 代码发布后的完整升级流程”构建 linux/amd64 镜像、记录 digest、备份、升级及验收。不要直接使用本仓库 `docker-compose.yml` 中的 `latest` 部署生产环境。
