@@ -208,4 +208,8 @@ func TestAIManagementPropagationProvisionAndDelete(t *testing.T) {
 	if raceBinding.Config.GroupID != 35 {
 		t.Fatal("concurrent issuance missed plan revision")
 	}
+	// The worker reconciles all products in its database. Leave no active
+	// issuance fixture for later tests' independent fake provider instances.
+	check(s.RevokeLicense(ctx, raceLicense.ID))
+	ai.Tick(ctx)
 }

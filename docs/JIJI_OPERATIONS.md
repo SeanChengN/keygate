@@ -1,6 +1,6 @@
 # 吉吉账号与许可证 AI 运营
 
-适用于 Keygate `v0.1.4-dw.3` 与影造 beta7。管理令牌只交给 Keygate 服务器；客户只输入软件许可证。界面使用“吉吉”，协议中的 `provider_id=jiji` 和服务域名保持不变。
+适用于 Keygate `v0.1.4-dw.4` 与影造 beta7。管理令牌只交给 Keygate 服务器；客户只输入软件许可证。界面使用“吉吉”，协议中的 `provider_id=jiji` 和服务域名保持不变。
 
 ## 1. 获取 Access token、Refresh token 与到期时间
 
