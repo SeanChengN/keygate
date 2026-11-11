@@ -6,7 +6,7 @@ import (
 	"github.com/uptrace/bun"
 )
 
-// AIPlanSettings are issuance defaults, never applied retroactively.
+// AIPlanSettings control issuance and the limits of enrolled licenses.
 type AIPlanSettings struct {
 	Enabled bool    `json:"enabled"`
 	GroupID int64   `json:"group_id"`
@@ -31,6 +31,8 @@ type AIBinding struct {
 	ProductID       string         `json:"product_id"`
 	Config          AIPlanSettings `bun:"type:jsonb" json:"config"`
 	ProfileBinding  string         `json:"profile_binding"`
+	PlanRevision    int64          `json:"plan_revision"`
+	Origin          string         `json:"origin"`
 	RemoteID        int64          `json:"remote_id"`
 	Secret          []byte         `json:"-"`
 	Revision        int64          `json:"revision"`

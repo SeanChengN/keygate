@@ -701,11 +701,13 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
               <TabsTrigger value="info">{t("licenses.info")}</TabsTrigger>
               <TabsTrigger value="usage">{t("licenses.usage")}</TabsTrigger>
               <TabsTrigger value="seats">{t("licenses.seats")}</TabsTrigger>
+              {lic.product?.slug === "movaura-studio" && lic.product.type === "desktop" && (
+                <TabsTrigger value="ai">{t("ai.title")}</TabsTrigger>
+              )}
             </TabsList>
 
             <TabsContent value="info">
               <div className="space-y-6">
-                {lic.product?.slug === "movaura-studio" && lic.product.type === "desktop" && <LicenseAICard id={id} />}
                 {/* Info */}
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
@@ -1122,6 +1124,11 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
               </div>
             </TabsContent>
 
+            {lic.product?.slug === "movaura-studio" && lic.product.type === "desktop" && (
+              <TabsContent value="ai">
+                <LicenseAICard id={id} />
+              </TabsContent>
+            )}
             <TabsContent value="usage">
               <UsageTab licenseId={id} />
             </TabsContent>

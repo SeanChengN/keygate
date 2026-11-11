@@ -77,6 +77,10 @@ export type AILimits = {
   rate_limit_1d: number
   rate_limit_7d: number
 }
+export type AIPlan = AILimits & { revision: number; summary: { state: string; count: number }[] }
+export type AIProvisionItem = { id: string; eligible: boolean; reason: string; state: string }
+export type AIProvisionPreview = { revision: number; config: AILimits; items: AIProvisionItem[] }
+export type AIProvisionBatch = { id: string; plan_id: string; revision: number; items: AIProvisionItem[] }
 export type LicenseAI = {
   enrolled: boolean
   key_hint?: string
@@ -96,8 +100,20 @@ export const licenseAI = {
   account: (id: string) =>
     get<{ enabled: boolean; configured: boolean; state: string }>(`/admin/products/${id}/ai-account`),
   saveAccount: (id: string, value: unknown) => put(`/admin/products/${id}/ai-account`, value),
-  plan: (id: string) => get<AILimits>(`/admin/plans/${id}/ai`),
-  savePlan: (id: string, value: AILimits) => put(`/admin/plans/${id}/ai`, value),
+  plan: (id: string) => get<AIPlan>(`/admin/plans/${id}/ai`),
+  savePlan: (id: string, value: AILimits) =>
+    put<{ revision: number; affected: number }>(`/admin/plans/${id}/ai`, value),
+  provision: (id: string, key: string) =>
+    request(`/admin/licenses/${id}/ai/provision`, { method: "POST", headers: { "Idempotency-Key": key }, body: "{}" }),
+  preview: (id: string) => get<AIProvisionPreview>(`/admin/plans/${id}/ai/provision-preview`),
+  provisionBatch: (id: string, revision: number, ids: string[], key: string) =>
+    request<AIProvisionBatch>(`/admin/plans/${id}/ai/provision-batches`, {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify({ revision, license_ids: ids }),
+    }),
+  batch: (id: string, batch: string) => get<AIProvisionBatch>(`/admin/plans/${id}/ai/provision-batches/${batch}`),
+  batches: (id: string) => get<{ batches: AIProvisionBatch[] }>(`/admin/plans/${id}/ai/provision-batches`),
   get: (id: string) => get<LicenseAI>(`/admin/licenses/${id}/ai`),
   save: (id: string, value: AILimits) => put(`/admin/licenses/${id}/ai`, value),
   action: (id: string, action: string, key: string) =>

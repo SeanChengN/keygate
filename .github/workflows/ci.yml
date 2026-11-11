@@ -55,6 +55,7 @@ jobs:
           go test -count=1 -run '^TestAI' ./internal/service/
           go test -count=1 -run '^TestAI' ./internal/handler/
           TEST_DATABASE_URL="$AI_TEST_DATABASE_URL" go test -count=1 -run '^TestIdempotencySensitiveResponseNotPersisted$' ./internal/middleware/
+          TEST_DATABASE_URL="$AI_TEST_DATABASE_URL" go test -count=1 -run '^TestDeleteRevokedUnpaidLicense' ./internal/store/
 
       - name: Build
         run: |

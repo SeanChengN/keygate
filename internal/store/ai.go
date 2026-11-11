@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"time"
 
 	"github.com/tabloy/keygate/internal/model"
@@ -14,11 +16,13 @@ import (
 type AIPlanRecord struct {
 	Config         model.AIPlanSettings `bun:"type:jsonb"`
 	ProfileBinding string
+	Revision       int64
+	Affected       int `bun:"-"`
 }
 
 func (s *Store) AIPlan(ctx context.Context, id string) (*AIPlanRecord, error) {
 	v := new(AIPlanRecord)
-	err := s.DB.NewSelect().Table("ai_plan_settings").Column("config", "profile_binding").Where("plan_id = ?", id).Scan(ctx, v)
+	err := s.DB.NewSelect().Table("ai_plan_settings").Column("config", "profile_binding", "revision").Where("plan_id = ?", id).Scan(ctx, v)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &AIPlanRecord{}, nil
 	}
@@ -30,14 +34,51 @@ func (s *Store) SaveAIPlan(ctx context.Context, id string, v *AIPlanRecord) erro
 	if err != nil {
 		return err
 	}
-	_, err = s.DB.ExecContext(ctx, `INSERT INTO ai_plan_settings(plan_id, config, profile_binding) VALUES (?, ?::jsonb, ?) ON CONFLICT (plan_id) DO UPDATE SET config = EXCLUDED.config, profile_binding = EXCLUDED.profile_binding`, id, string(raw), v.ProfileBinding)
+	return s.DB.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := LockAIPlan(ctx, tx, id); err != nil {
+			return err
+		}
+		if err := tx.NewRaw(`INSERT INTO ai_plan_settings(plan_id, config, profile_binding) VALUES (?, ?::jsonb, ?) ON CONFLICT (plan_id) DO UPDATE SET config = EXCLUDED.config, profile_binding = EXCLUDED.profile_binding, revision = ai_plan_settings.revision + 1 RETURNING revision`, id, string(raw), v.ProfileBinding).Scan(ctx, &v.Revision); err != nil {
+			return err
+		}
+		var ids []string
+		if err := tx.NewRaw(`SELECT l.id FROM licenses l JOIN license_ai_bindings b ON b.license_id=l.id WHERE l.plan_id=? ORDER BY l.id FOR UPDATE OF l`, id).Scan(ctx, &ids); err != nil {
+			return err
+		}
+		if len(ids) > 0 && (v.Config.GroupID <= 0 || v.Config.Quota < 0.00000001 || math.IsNaN(v.Config.Quota) || math.IsInf(v.Config.Quota, 0) || v.ProfileBinding == "") {
+			return errors.New("enrolled licenses require valid AI limits and profile")
+		}
+		cfg := v.Config
+		cfg.Enabled = true
+		boundRaw, err := json.Marshal(cfg)
+		if err != nil {
+			return err
+		}
+		for _, licenseID := range ids {
+			if _, err := tx.ExecContext(ctx, `UPDATE license_ai_bindings SET config=?::jsonb, profile_binding=?, plan_revision=?, state=CASE WHEN state='uncertain' THEN state ELSE 'pending' END, updated_at=now() WHERE license_id=?`, string(boundRaw), v.ProfileBinding, v.Revision, licenseID); err != nil {
+				return err
+			}
+			if err := EnqueueAI(ctx, tx, licenseID, "sync", fmt.Sprintf("plan:%d", v.Revision)); err != nil {
+				return err
+			}
+		}
+		v.Affected = len(ids)
+		return nil
+	})
+}
+
+func LockAIPlan(ctx context.Context, db bun.IDB, id string) error {
+	_, err := db.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", "ai-plan:"+id)
 	return err
 }
 
 // issueAI copies defaults only at insert time, in the license transaction.
 func (s *Store) issueAI(ctx context.Context, tx bun.IDB, l *model.License) error {
+	if err := LockAIPlan(ctx, tx, l.PlanID); err != nil {
+		return err
+	}
 	var settings AIPlanRecord
-	err := tx.NewSelect().Table("ai_plan_settings").Column("config", "profile_binding").Where("plan_id = ?", l.PlanID).Scan(ctx, &settings)
+	err := tx.NewSelect().Table("ai_plan_settings").Column("config", "profile_binding", "revision").Where("plan_id = ?", l.PlanID).Scan(ctx, &settings)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -62,7 +103,7 @@ func (s *Store) issueAI(ctx context.Context, tx bun.IDB, l *model.License) error
 	if anchor.IsZero() {
 		anchor = time.Now()
 	}
-	b := &model.AIBinding{LicenseID: l.ID, ProductID: l.ProductID, Config: settings.Config, ProfileBinding: settings.ProfileBinding, Generation: 1, State: "pending", RemoteView: map[string]any{}, Anchor: anchor, Timezone: zone.String(), UpdatedAt: time.Now()}
+	b := &model.AIBinding{LicenseID: l.ID, ProductID: l.ProductID, Config: settings.Config, ProfileBinding: settings.ProfileBinding, PlanRevision: settings.Revision, Origin: "issuance", Generation: 1, State: "pending", RemoteView: map[string]any{}, Anchor: anchor, Timezone: zone.String(), UpdatedAt: time.Now()}
 	if _, err := tx.NewInsert().Model(b).Exec(ctx); err != nil {
 		return err
 	}

@@ -1162,6 +1162,8 @@ func (h *AdminHandler) DeleteLicense(c *gin.Context) {
 		response.Err(c, http.StatusConflict, "LICENSE_NOT_REVOKED", "license must be revoked before deletion")
 	case errors.Is(err, store.ErrLicensePaymentLinked):
 		response.Err(c, http.StatusConflict, "LICENSE_PAYMENT_LINKED", "licenses linked to a payment provider cannot be deleted")
+	case errors.Is(err, store.ErrAIDeleteUnconfirmed):
+		response.Err(c, http.StatusConflict, "AI_DELETE_UNCONFIRMED", "请先确认 AI Key 已禁用并处理未完成或结果不明的同步任务，再删除许可证")
 	default:
 		response.Internal(c)
 	}

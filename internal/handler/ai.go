@@ -100,7 +100,15 @@ func (h *AdminHandler) GetAIPlan(c *gin.Context) {
 		response.Internal(c)
 		return
 	}
-	response.OK(c, v.Config)
+	var summary []struct {
+		State string `json:"state"`
+		Count int    `json:"count"`
+	}
+	if err := h.Store.DB.NewRaw(`SELECT b.state, count(*) FROM license_ai_bindings b JOIN licenses l ON l.id=b.license_id WHERE l.plan_id=? GROUP BY b.state`, p.ID).Scan(c, &summary); err != nil {
+		response.Internal(c)
+		return
+	}
+	response.OK(c, gin.H{"enabled": v.Config.Enabled, "group_id": v.Config.GroupID, "quota": v.Config.Quota, "rate_limit_5h": v.Config.Rate5H, "rate_limit_1d": v.Config.Rate1D, "rate_limit_7d": v.Config.Rate7D, "revision": v.Revision, "summary": summary})
 }
 func (h *AdminHandler) PutAIPlan(c *gin.Context) {
 	if !h.aiReady(c) {
@@ -124,7 +132,25 @@ func (h *AdminHandler) PutAIPlan(c *gin.Context) {
 		return
 	}
 	binding := ""
-	if req.Enabled {
+	validate := req
+	validate.Enabled = true
+	if req.GroupID <= 0 || req.Quota <= 0 {
+		var count int
+		err := h.Store.DB.NewRaw("SELECT count(*) FROM license_ai_bindings b JOIN licenses l ON l.id=b.license_id WHERE l.plan_id=?", p.ID).Scan(c, &count)
+		if err != nil {
+			response.Internal(c)
+			return
+		}
+		if count > 0 {
+			response.BadRequest(c, "已有绑定的方案必须保留有效分组和正数额度")
+			return
+		}
+	}
+	if req.Enabled || req.GroupID > 0 || req.Quota > 0 {
+		if err := service.ValidateAIConfig(validate); err != nil {
+			response.BadRequest(c, err.Error())
+			return
+		}
 		if p.LicenseType != "subscription" || p.GraceDays != 0 {
 			response.BadRequest(c, "AI requires a subscription with zero grace")
 			return
@@ -134,17 +160,20 @@ func (h *AdminHandler) PutAIPlan(c *gin.Context) {
 			response.BadRequest(c, err.Error())
 			return
 		}
-		if _, err = h.AI.Account(c, p.ProductID); err != nil {
-			response.BadRequest(c, err.Error())
-			return
+		if req.Enabled {
+			if _, err = h.AI.Account(c, p.ProductID); err != nil {
+				response.BadRequest(c, err.Error())
+				return
+			}
 		}
 	}
-	if err := h.Store.SaveAIPlan(c, p.ID, &store.AIPlanRecord{Config: req, ProfileBinding: binding}); err != nil {
+	record := &store.AIPlanRecord{Config: req, ProfileBinding: binding}
+	if err := h.Store.SaveAIPlan(c, p.ID, record); err != nil {
 		response.Internal(c)
 		return
 	}
 	h.Store.Audit(c, &model.AuditLog{Entity: "plan", EntityID: p.ID, Action: "ai_defaults_updated", ActorType: "admin", ActorID: adminID(c)})
-	response.OK(c, req)
+	response.OK(c, gin.H{"revision": record.Revision, "affected": record.Affected})
 }
 
 func (h *AdminHandler) GetLicenseAI(c *gin.Context) {
@@ -193,9 +222,6 @@ func (h *AdminHandler) PutLicenseAI(c *gin.Context) {
 		var b model.AIBinding
 		if err := tx.NewSelect().Model(&b).Where("license_id = ?", c.Param("id")).For("UPDATE").Scan(ctx); err != nil {
 			return err
-		}
-		if b.Config.GroupID != req.GroupID {
-			return errors.New("group changes require a new key; edit plan defaults for future issuance")
 		}
 		b.Config = req
 		b.State = "pending"

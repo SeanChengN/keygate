@@ -54,6 +54,9 @@ func TestAIAdminScopeAndRedaction(t *testing.T) {
 	r.PUT("/products/:id/ai-account", h.PutAIAccount)
 	r.GET("/licenses/:id/ai", h.GetLicenseAI)
 	r.GET("/licenses/:id/key", h.RevealLicenseKey)
+	r.POST("/licenses/:id/ai/provision", h.ProvisionLicenseAI)
+	r.POST("/plans/:id/ai/provision-batches", h.CreateAIProvisionBatch)
+	r.GET("/plans/:id/ai/provision-preview", h.PreviewAIProvision)
 	request := func(path string, foreign bool) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		q := httptest.NewRequest("GET", path, nil)
@@ -76,6 +79,15 @@ func TestAIAdminScopeAndRedaction(t *testing.T) {
 	}
 	if w = request("/licenses/"+b.LicenseID+"/ai", true); w.Code != 403 {
 		t.Fatal("cross-product license scope accepted")
+	}
+	for _, path := range []string{"/licenses/" + b.LicenseID + "/ai/provision", "/plans/" + func() string { l, _ := s.FindLicenseByID(ctx, b.LicenseID); return l.PlanID }() + "/ai/provision-batches"} {
+		w := httptest.NewRecorder()
+		q := httptest.NewRequest("POST", path, strings.NewReader("{}"))
+		q.Header.Set("Test-Foreign-Scope", "1")
+		r.ServeHTTP(w, q)
+		if w.Code != 403 {
+			t.Fatalf("cross product provisioning accepted: %d", w.Code)
+		}
 	}
 	w = request("/licenses/"+b.LicenseID+"/ai", false)
 	if w.Code != 200 || strings.Contains(w.Body.String(), "synthetic-") || strings.Contains(w.Body.String(), "candidate_secret") || strings.Contains(w.Body.String(), "\"secret\"") {

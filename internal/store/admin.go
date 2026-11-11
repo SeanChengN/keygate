@@ -270,6 +270,9 @@ func (s *Store) DeleteRevokedUnpaidLicense(ctx context.Context, id, actorID, ipA
 		return nil, err
 	}
 	defer tx.Rollback() //nolint:errcheck
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", "ai-license:"+id); err != nil {
+		return nil, err
+	}
 
 	deleted := new(model.License)
 	if err := tx.NewRaw(`
@@ -311,6 +314,9 @@ func (s *Store) DeleteRevokedUnpaidLicense(ctx context.Context, id, actorID, ipA
 		}
 	}
 
+	if err := deleteSafeAIBinding(ctx, tx, id); err != nil {
+		return nil, err
+	}
 	if _, err := tx.NewDelete().Model((*model.License)(nil)).Where("id = ?", id).Exec(ctx); err != nil {
 		return nil, err
 	}

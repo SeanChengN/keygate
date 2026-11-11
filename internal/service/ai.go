@@ -396,7 +396,7 @@ func (s *AIService) checkpoint(ctx context.Context, b *model.AIBinding, j *model
 					return err
 				}
 			}
-			if b.Revision == 1 && s.Email != nil && s.Email.IsConfigured() {
+			if b.Revision == 1 && b.Origin != "manual" && s.Email != nil && s.Email.IsConfigured() {
 				lic, err := s.Store.FindLicenseByID(ctx, b.LicenseID)
 				if err != nil {
 					return err
@@ -588,6 +588,10 @@ func (s *AIService) syncRemote(ctx context.Context, token string, id int64, l *m
 	if id == 0 {
 		return nil
 	}
+	before, err := s.Client.Get(ctx, token, id)
+	if err != nil {
+		return err
+	}
 	if usable {
 		profile, err := AIProfileBinding(l.Plan)
 		if err != nil || profile != b.ProfileBinding {
@@ -608,6 +612,9 @@ func (s *AIService) syncRemote(ctx context.Context, token string, id int64, l *m
 	k, err := s.Client.Get(ctx, token, id)
 	if err != nil {
 		return err
+	}
+	if before.Key != k.Key || k.QuotaUsed < before.QuotaUsed {
+		return errors.New("provider changed key or cleared historical usage; manual resolution required")
 	}
 	if k.ID != id || k.Status != status || k.GroupID != b.Config.GroupID || k.Quota != b.Config.Quota || k.Rate5H != b.Config.Rate5H || k.Rate1D != b.Config.Rate1D || k.Rate7D != b.Config.Rate7D || l.ValidUntil != nil && (k.ExpiresAt == nil || k.ExpiresAt.Unix() != l.ValidUntil.Unix()) {
 		return errors.New("provider configuration readback mismatch")

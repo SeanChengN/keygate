@@ -1,4 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query"
+import { ChevronDown, MoreHorizontal } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import {
   AlertDialog,
@@ -9,30 +10,45 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { type AILimits, licenseAI } from "@/lib/api"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { useI18n } from "@/i18n"
+import type en from "@/i18n/locales/en"
+
+type TranslationKeys = keyof typeof en
+
+import { type AILimits, type AIProvisionPreview, licenseAI } from "@/lib/api"
 
 const empty: AILimits = { enabled: false, group_id: 0, quota: 0, rate_limit_5h: 0, rate_limit_1d: 0, rate_limit_7d: 0 }
 const labels = {
-  group_id: "jiji 分组 ID",
-  quota: "每月总额度（USD，必须大于 0）",
-  rate_limit_5h: "5 小时限额（USD，0 不限制）",
-  rate_limit_1d: "1 天限额（USD，0 不限制）",
-  rate_limit_7d: "7 天限额（USD，0 不限制）",
+  group_id: "ai.group",
+  quota: "ai.quota",
+  rate_limit_5h: "ai.rate5h",
+  rate_limit_1d: "ai.rate1d",
+  rate_limit_7d: "ai.rate7d",
 }
 const states: Record<string, string> = {
-  pending: "处理中",
-  running: "处理中",
-  synced: "已同步",
-  done: "已完成",
-  failed: "失败",
-  uncertain: "结果待确认",
-  ready: "就绪",
-  attention: "需要管理员处理",
+  pending: "ai.pending",
+  running: "ai.pending",
+  synced: "ai.synced",
+  done: "ai.done",
+  failed: "ai.failed",
+  uncertain: "ai.uncertain",
+  ready: "ai.ready",
+  attention: "ai.attention",
+  skipped: "ai.skipped",
+  removed: "ai.removed",
+}
+function useAIState() {
+  const { t } = useI18n()
+  return (state: string) => (states[state] ? t(states[state] as TranslationKeys) : state)
 }
 function Limits({
   value,
@@ -43,11 +59,12 @@ function Limits({
   onChange: (value: AILimits) => void
   fixedGroup?: boolean
 }) {
+  const { t } = useI18n()
   return (
-    <div className="space-y-3">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       {Object.entries(labels).map(([key, label]) => (
         <Label key={key} className="grid gap-2">
-          {label}
+          {t(label as TranslationKeys)}
           <Input
             type="number"
             min="0"
@@ -72,6 +89,8 @@ function Failure({ error }: { error: Error | null }) {
 }
 
 export function AIAccountDialog({ id }: { id: string }) {
+  const { t } = useI18n()
+  const stateLabel = useAIState()
   const [open, setOpen] = useState(false),
     [enabled, setEnabled] = useState(false)
   const [access, setAccess] = useState(""),
@@ -105,7 +124,7 @@ export function AIAccountDialog({ id }: { id: string }) {
   return (
     <>
       <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
-        jiji 账号
+        {t("ai.account")}
       </Button>
       <Dialog
         open={open}
@@ -120,10 +139,12 @@ export function AIAccountDialog({ id }: { id: string }) {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>jiji 管理账号</DialogTitle>
-            <DialogDescription>令牌只留在服务器加密存储；留空保留，重新录入后恢复自动同步。</DialogDescription>
+            <DialogTitle>{t("ai.accountTitle")}</DialogTitle>
+            <DialogDescription>{t("ai.accountDescription")}</DialogDescription>
           </DialogHeader>
-          <p>状态：{states[query.data?.state || ""] || query.data?.state || "未配置"}</p>
+          <p>
+            {t("ai.status")}：{query.data?.state ? stateLabel(query.data.state) : t("ai.unconfigured")}
+          </p>
           <Failure error={query.error} />
           <Failure error={save.error} />
           <form
@@ -135,7 +156,7 @@ export function AIAccountDialog({ id }: { id: string }) {
           >
             <Label className="flex gap-2">
               <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-              启用后台同步
+              {t("ai.enableSync")}
             </Label>
             <Label className="grid gap-2">
               Access token
@@ -146,7 +167,7 @@ export function AIAccountDialog({ id }: { id: string }) {
               <Input type="password" autoComplete="off" value={refresh} onChange={(e) => setRefresh(e.target.value)} />
             </Label>
             <Label className="grid gap-2">
-              Access token 到期时刻（本机时区）
+              {t("ai.tokenExpiry")}
               <Input
                 type="datetime-local"
                 required={!!(access || refresh)}
@@ -154,8 +175,8 @@ export function AIAccountDialog({ id }: { id: string }) {
                 onChange={(e) => setExpires(e.target.value)}
               />
             </Label>
-            <Button disabled={save.isPending || query.isPending || query.isError}>保存账号</Button>
-            {save.isSuccess && <p role="status">已保存</p>}
+            <Button disabled={save.isPending || query.isPending || query.isError}>{t("common.save")}</Button>
+            {save.isSuccess && <p role="status">{t("ai.saved")}</p>}
           </form>
         </DialogContent>
       </Dialog>
@@ -164,52 +185,184 @@ export function AIAccountDialog({ id }: { id: string }) {
 }
 
 export function AIPlanDialog({ id }: { id: string }) {
+  const { t } = useI18n()
+  const stateLabel = useAIState()
+  const [dirty, setDirty] = useState(false)
+  const [confirmSave, setConfirmSave] = useState(false)
+  const [preview, setPreview] = useState<AIProvisionPreview | null>(null)
+  const [batchId, setBatchId] = useState("")
+  const batchKey = useRef("")
   const [open, setOpen] = useState(false),
     [value, setValue] = useState(empty)
   const query = useQuery({ queryKey: ["ai-plan", id], queryFn: () => licenseAI.plan(id), enabled: open, retry: false })
+  const batches = useQuery({
+    queryKey: ["ai-batches", id],
+    queryFn: () => licenseAI.batches(id),
+    enabled: open,
+    refetchInterval: 5000,
+    retry: false,
+  })
   useEffect(() => {
-    if (query.data) setValue(query.data)
-  }, [query.data])
+    if (!batchId && batches.data?.batches[0]) setBatchId(batches.data.batches[0].id)
+  }, [batchId, batches.data])
+  useEffect(() => {
+    if (query.data && !dirty) setValue(query.data)
+  }, [query.data, dirty])
+  const previewMutation = useMutation({
+    mutationFn: () => licenseAI.preview(id),
+    onSuccess: (v) => {
+      batchKey.current = ""
+      setPreview(v)
+    },
+  })
+  const provision = useMutation({
+    mutationFn: () => {
+      batchKey.current ||= crypto.randomUUID()
+      return licenseAI.provisionBatch(
+        id,
+        preview!.revision,
+        preview!.items.filter((i) => i.eligible).map((i) => i.id),
+        batchKey.current,
+      )
+    },
+    onSuccess: (b) => {
+      setBatchId(b.id)
+      void batches.refetch()
+      batchKey.current = ""
+      setPreview(null)
+    },
+  })
+  const batch = useQuery({
+    queryKey: ["ai-batch", id, batchId],
+    queryFn: () => licenseAI.batch(id, batchId),
+    enabled: !!batchId,
+    refetchInterval: 5000,
+    retry: false,
+  })
   const save = useMutation({
     mutationFn: () => licenseAI.savePlan(id, value),
     onSuccess: () => {
+      setDirty(false)
+      setPreview(null)
       void query.refetch()
     },
   })
   return (
     <>
       <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
-        AI 默认配置
+        {t("ai.planTitle")}
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>新许可证 AI 默认配置</DialogTitle>
-            <DialogDescription>
-              默认关闭。只影响之后签发的许可证；现有许可证不回填。新客户端就绪后再开启。
-            </DialogDescription>
+            <DialogTitle>{t("ai.planTitle")}</DialogTitle>
+            <DialogDescription>{t("ai.planDescription")}</DialogDescription>
           </DialogHeader>
           <Failure error={query.error} />
           <Failure error={save.error} />
+          <Failure error={previewMutation.error || provision.error || batch.error} />
           <form
             className="space-y-4"
             onSubmit={(e) => {
               e.preventDefault()
-              save.mutate()
+              setConfirmSave(true)
             }}
           >
             <Label className="flex gap-2">
               <input
                 type="checkbox"
                 checked={value.enabled}
-                onChange={(e) => setValue({ ...value, enabled: e.target.checked })}
+                onChange={(e) => {
+                  setDirty(true)
+                  setValue({ ...value, enabled: e.target.checked })
+                }}
               />
-              新签发时自动创建专属 Key
+              {t("ai.autoProvision")}
             </Label>
-            <Limits value={value} onChange={setValue} />
-            <Button disabled={save.isPending || query.isPending || query.isError}>保存默认配置</Button>
-            {save.isSuccess && <p role="status">已保存</p>}
+            <Limits
+              value={value}
+              onChange={(v) => {
+                setDirty(true)
+                setValue(v)
+              }}
+            />
+            <Button disabled={save.isPending || query.isPending || query.isError}>{t("ai.saveSync")}</Button>
+            {save.isSuccess && <p role="status">{t("ai.saved")}</p>}
           </form>
+          <p className="text-sm text-muted-foreground">
+            {t("ai.revision")} {query.data?.revision || 0} ·{" "}
+            {query.data?.summary?.map((s) => `${stateLabel(s.state)}: ${s.count}`).join(" / ")}
+          </p>
+          <Button
+            variant="outline"
+            disabled={dirty || previewMutation.isPending}
+            onClick={() => previewMutation.mutate()}
+          >
+            {t("ai.previewBatch")}
+          </Button>
+          {preview && (
+            <div className="space-y-3 rounded-lg border p-4">
+              <p>
+                {t("ai.batchWarning", {
+                  count: preview.items.filter((i) => i.eligible).length,
+                  quota: preview.config.quota,
+                })}
+              </p>
+              <ul className="max-h-40 overflow-auto text-xs">
+                {preview.items.map((i) => (
+                  <li key={i.id}>
+                    {i.id} ·{" "}
+                    {i.eligible
+                      ? t("ai.eligible")
+                      : t(i.reason === "already_bound" ? "ai.alreadyBound" : "ai.unavailable")}
+                  </li>
+                ))}
+              </ul>
+              <Button
+                disabled={provision.isPending || !preview.items.some((i) => i.eligible)}
+                onClick={() => provision.mutate()}
+              >
+                {t("ai.confirmBatch")}
+              </Button>
+            </div>
+          )}
+          {batch.data && (
+            <div role="status" className="max-h-44 overflow-auto text-sm">
+              {batch.data.items.map((i) => (
+                <p key={i.id}>
+                  {i.id} · {stateLabel(i.state)}
+                </p>
+              ))}
+            </div>
+          )}
+          {!!batches.data?.batches.length && (
+            <Select value={batchId} onValueChange={setBatchId}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {batches.data.batches.map((b) => (
+                  <SelectItem key={b.id} value={b.id}>
+                    {b.id.slice(0, 8)} · {t("ai.revision")} {b.revision}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          <AlertDialog open={confirmSave} onOpenChange={setConfirmSave}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>{t("ai.saveSync")}</AlertDialogTitle>
+                <AlertDialogDescription>
+                  {t("ai.planConfirm", { count: query.data?.summary?.reduce((n, s) => n + s.count, 0) || 0 })}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <div className="flex justify-end gap-2">
+                <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+                <AlertDialogAction onClick={() => save.mutate()}>{t("ai.confirm")}</AlertDialogAction>
+              </div>
+            </AlertDialogContent>
+          </AlertDialog>
         </DialogContent>
       </Dialog>
     </>
@@ -217,6 +370,10 @@ export function AIPlanDialog({ id }: { id: string }) {
 }
 
 export function LicenseAICard({ id }: { id: string }) {
+  const { t } = useI18n()
+  const stateLabel = useAIState()
+  const [dirty, setDirty] = useState(false)
+  const provisionKey = useRef("")
   const query = useQuery({
     queryKey: ["license-ai", id],
     queryFn: () => licenseAI.get(id),
@@ -229,11 +386,22 @@ export function LicenseAICard({ id }: { id: string }) {
   const binding = query.data?.binding
   const limits = binding?.config
   useEffect(() => {
-    if (limits) setValue(limits)
-  }, [limits])
+    if (limits && !dirty) setValue(limits)
+  }, [limits, dirty])
+  const provision = useMutation({
+    mutationFn: () => {
+      provisionKey.current ||= crypto.randomUUID()
+      return licenseAI.provision(id, provisionKey.current)
+    },
+    onSuccess: () => {
+      provisionKey.current = ""
+      void query.refetch()
+    },
+  })
   const save = useMutation({
     mutationFn: () => licenseAI.save(id, value),
     onSuccess: () => {
+      setDirty(false)
       void query.refetch()
     },
   })
@@ -248,44 +416,92 @@ export function LicenseAICard({ id }: { id: string }) {
     },
   })
   const actions: Record<string, string> = {
-    reset_quota: "重置总已用额度",
-    reset_rate: "重置三个周期用量",
-    rotate: "更换 Key",
-    retry: "重试同步",
+    reset_quota: t("ai.resetQuota"),
+    reset_rate: t("ai.resetRate"),
+    rotate: t("ai.rotate"),
+    retry: t("ai.retry"),
   }
   const busy = save.isPending || action.isPending
   return (
-    <Card>
-      <CardContent className="space-y-4 pt-6">
-        <h3 className="font-semibold">AI 服务</h3>
+    <Card className="border-0 shadow-none">
+      <CardContent className="space-y-5 px-0 py-2">
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold">{t("ai.account")}</h3>
+          {binding && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <MoreHorizontal className="mr-2 h-4 w-4" />
+                  {t("ai.operations")}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {Object.entries(actions).map(([name, label]) => (
+                  <DropdownMenuItem key={name} disabled={busy} onSelect={() => setConfirm(name)}>
+                    {label}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
         <Failure error={query.error} />
         <Failure error={save.error} />
         <Failure error={action.error} />
+        <Failure error={provision.error} />
         {query.isPending ? (
-          <p>读取中…</p>
+          <p>{t("ai.loading")}</p>
         ) : !query.data?.enrolled ? (
-          <p>此许可证未开通 AI 自动绑定，保持原有行为。</p>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">{t("ai.unbound")}</p>
+            <Button disabled={provision.isPending} onClick={() => setConfirm("provision")}>
+              {t("ai.provision")}
+            </Button>
+          </div>
         ) : (
           binding && (
             <>
-              <p role="status">
-                {states[binding.state] || binding.state} · {query.data.key_hint || "Key 准备中"} · 凭据版本{" "}
-                {binding.revision}
-              </p>
-              <p className="text-sm">
-                Key ID：{binding.remote_id || "—"}；到期：{binding.remote.expires_at || "—"}；已用：
-                {binding.remote.quota_used ?? "—"} USD
-              </p>
+              <div className="flex items-center justify-between gap-3">
+                <Badge
+                  variant={binding.state === "failed" || binding.state === "uncertain" ? "destructive" : "secondary"}
+                >
+                  {stateLabel(binding.state)}
+                </Badge>
+                <span className="text-xs text-muted-foreground">
+                  {t("ai.revision")} {binding.revision}
+                </span>
+              </div>
+              <dl className="grid grid-cols-1 gap-x-6 gap-y-4 rounded-lg bg-muted/40 p-4 text-sm sm:grid-cols-2">
+                <div>
+                  <dt className="text-muted-foreground">Key ID</dt>
+                  <dd className="mt-1 font-medium">{binding.remote_id || "—"}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">{t("ai.used")}</dt>
+                  <dd className="mt-1 font-medium">
+                    {binding.remote.quota_used ?? "—"} / {binding.config.quota} USD
+                  </dd>
+                </div>
+                <div className="sm:col-span-2">
+                  <dt className="text-muted-foreground">{t("ai.expiry")}</dt>
+                  <dd className="mt-1">
+                    {binding.remote.expires_at ? new Date(binding.remote.expires_at).toLocaleString() : "—"}
+                  </dd>
+                </div>
+              </dl>
               {binding.last_error && (
                 <p role="alert" className="text-destructive">
                   {binding.last_error}
                 </p>
               )}
               <p className="text-sm text-muted-foreground">
-                按 {binding.timezone} 每月重置，原始起点 {binding.anchor}。重置总额度不重置周期用量。
+                {t("ai.anchor", { zone: binding.timezone, date: new Date(binding.anchor).toLocaleString() })}
               </p>
-              <details>
-                <summary>调整此许可证额度</summary>
+              <details className="group rounded-lg border border-border p-4">
+                <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-medium [&::-webkit-details-marker]:hidden">
+                  {t("ai.adjust")}
+                  <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+                </summary>
                 <form
                   className="space-y-3 mt-3"
                   onSubmit={(e) => {
@@ -293,26 +509,44 @@ export function LicenseAICard({ id }: { id: string }) {
                     save.mutate()
                   }}
                 >
-                  <Limits value={value} onChange={setValue} fixedGroup />
-                  <Button disabled={busy}>保存额度并同步</Button>
+                  <Limits
+                    value={value}
+                    onChange={(v) => {
+                      setDirty(true)
+                      setValue(v)
+                    }}
+                  />
+                  <Button disabled={busy}>{t("ai.saveLimits")}</Button>
                 </form>
               </details>
-              <div className="flex flex-wrap gap-2">
-                {Object.entries(actions).map(([name, label]) => (
-                  <Button key={name} variant="outline" disabled={busy} onClick={() => setConfirm(name)}>
-                    {label}
-                  </Button>
-                ))}
-              </div>
-              <details>
-                <summary>同步操作记录</summary>
-                <ul className="text-xs space-y-2 mt-2">
-                  {query.data.jobs?.map((j) => (
-                    <li key={j.id}>
-                      {actions[j.action] || j.action} · {states[j.state] || j.state} · {j.phase} {j.last_error}
-                    </li>
-                  ))}
-                </ul>
+              <details className="group rounded-lg border border-border p-4">
+                <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-medium [&::-webkit-details-marker]:hidden">
+                  {t("ai.history")}
+                  <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+                </summary>
+                <div className="mt-3 max-h-52 overflow-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>{t("ai.operation")}</TableHead>
+                        <TableHead>{t("ai.status")}</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {query.data.jobs?.map((j) => (
+                        <TableRow key={j.id}>
+                          <TableCell>
+                            {actions[j.action] || (j.action === "sync" ? t("ai.sync") : t("ai.monthly"))}
+                          </TableCell>
+                          <TableCell>
+                            {stateLabel(j.state)}
+                            {j.last_error && <p className="text-xs text-destructive">{j.last_error}</p>}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
               </details>
             </>
           )
@@ -325,20 +559,26 @@ export function LicenseAICard({ id }: { id: string }) {
         >
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>{actions[confirm]}</AlertDialogTitle>
+              <AlertDialogTitle>{confirm === "provision" ? t("ai.provision") : actions[confirm]}</AlertDialogTitle>
               <AlertDialogDescription>
-                {confirm === "rotate"
-                  ? "新 Key 验证后禁用旧 Key，再发布新绑定。本周期额度恢复至配置上限，客户端需刷新授权；失败模型请求不会自动重发。"
-                  : confirm === "reset_quota"
-                    ? "将总已用额度归零，恢复至配置上限；周期用量和会员有效期保持不变。"
-                    : confirm === "reset_rate"
-                      ? "清零三个周期用量；总已用额度和会员有效期保持不变。"
-                      : "仅重试可安全恢复的操作。结果不明的重置须人工核对，不会自动重复执行。"}
+                {confirm === "provision"
+                  ? t("ai.provisionWarning")
+                  : confirm === "rotate"
+                    ? t("ai.rotateWarning")
+                    : confirm === "reset_quota"
+                      ? t("ai.resetQuotaWarning")
+                      : confirm === "reset_rate"
+                        ? t("ai.resetRateWarning")
+                        : t("ai.retryWarning")}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <div className="flex gap-2 justify-end">
-              <AlertDialogCancel>取消</AlertDialogCancel>
-              <AlertDialogAction onClick={() => action.mutate(confirm)}>确认</AlertDialogAction>
+              <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => (confirm === "provision" ? provision.mutate() : action.mutate(confirm))}
+              >
+                {t("ai.confirm")}
+              </AlertDialogAction>
             </div>
           </AlertDialogContent>
         </AlertDialog>

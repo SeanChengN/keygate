@@ -270,14 +270,15 @@ func TestAIProvisioningIntegration(t *testing.T) {
 	if ai.open(b.Secret, "key:other", &plain) == nil {
 		t.Fatal("AAD not bound")
 	}
-	// A later default change must not mutate the license snapshot.
+	// A later plan change updates enrolled limits without resetting consumption.
 	cfg.Quota = .02
 	check(s.SaveAIPlan(ctx, plan.ID, &store.AIPlanRecord{Config: cfg, ProfileBinding: binding}))
 	b, err = s.AIBinding(ctx, lic.ID)
 	check(err)
-	if b.Config.Quota != .01 {
-		t.Fatal("retroactive defaults")
+	if b.Config.Quota != .02 {
+		t.Fatal("plan limits not propagated")
 	}
+	ai.Tick(ctx)
 	enqueue := func(action, dedupe string) { check(store.EnqueueAI(ctx, s.DB, lic.ID, action, dedupe)); ai.Tick(ctx) }
 	f.keys[1].QuotaUsed = .005
 	f.keys[1].Usage5H = .001
