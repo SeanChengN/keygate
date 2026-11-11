@@ -69,6 +69,41 @@ function del<T>(path: string) {
   return request<T>(path, { method: "DELETE" })
 }
 
+export type AILimits = {
+  enabled: boolean
+  group_id: number
+  quota: number
+  rate_limit_5h: number
+  rate_limit_1d: number
+  rate_limit_7d: number
+}
+export type LicenseAI = {
+  enrolled: boolean
+  key_hint?: string
+  binding?: {
+    config: AILimits
+    state: string
+    last_error: string
+    remote_id: number
+    revision: number
+    anchor: string
+    timezone: string
+    remote: Record<string, string | number>
+  }
+  jobs?: { id: string; action: string; state: string; phase: string; last_error: string }[]
+}
+export const licenseAI = {
+  account: (id: string) =>
+    get<{ enabled: boolean; configured: boolean; state: string }>(`/admin/products/${id}/ai-account`),
+  saveAccount: (id: string, value: unknown) => put(`/admin/products/${id}/ai-account`, value),
+  plan: (id: string) => get<AILimits>(`/admin/plans/${id}/ai`),
+  savePlan: (id: string, value: AILimits) => put(`/admin/plans/${id}/ai`, value),
+  get: (id: string) => get<LicenseAI>(`/admin/licenses/${id}/ai`),
+  save: (id: string, value: AILimits) => put(`/admin/licenses/${id}/ai`, value),
+  action: (id: string, action: string, key: string) =>
+    request(`/admin/licenses/${id}/ai/${action}`, { method: "POST", headers: { "Idempotency-Key": key }, body: "{}" }),
+}
+
 // ─── Site Config (public, no auth) ───
 export const site = {
   config: () => get<Record<string, string>>("/config"),
@@ -219,7 +254,7 @@ export const admin = {
     external_customer_id?: string
     external_workspace_id?: string
     valid_until?: string
-  }) => post<License & { license_key: string }>("/admin/licenses", data),
+  }) => post<License & { license_key: string; ai_pending?: boolean }>("/admin/licenses", data),
   setLicenseCustomer: (id: string, customerId: string) =>
     patch<{ customer_id: string }>(`/admin/licenses/${id}/customer`, { customer_id: customerId }),
   // Empty valid_until clears the expiry for non-subscription licenses.

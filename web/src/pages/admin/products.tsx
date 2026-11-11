@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Cloud, Laptop, Layers, Pencil, Plus, Search, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { EntityId } from "@/components/entity-id"
+import { AIAccountDialog } from "@/components/license-ai"
 import { showToast } from "@/components/toast"
 import {
   AlertDialog,
@@ -140,6 +141,7 @@ export default function ProductsPage() {
                       </DataTableCell>
                       <DataTableCell>
                         <div className="flex gap-1">
+                          {p.slug === "movaura-studio" && p.type === "desktop" && <AIAccountDialog id={p.id} />}
                           <Button variant="ghost" size="icon" onClick={() => setEditing(p)}>
                             <Pencil className="h-4 w-4" />
                           </Button>

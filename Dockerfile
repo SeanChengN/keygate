@@ -7,7 +7,7 @@ COPY web/ .
 RUN bun run build
 
 # ── Build backend ──
-FROM golang:1.25.13-alpine@sha256:1e0126852075c9c60731c8ba49088448b91f63e2aed97ca9d1a9791622a05946 AS backend
+FROM golang:1.26.11-alpine3.23@sha256:db99415e2625ce0ee03eed09edf7f32ae8c58dc399f28cc602a87fe7238119e4 AS backend
 RUN apk add --no-cache git
 WORKDIR /app
 COPY go.mod go.sum ./

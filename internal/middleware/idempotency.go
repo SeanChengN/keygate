@@ -159,8 +159,8 @@ func Idempotency(s *store.Store) gin.HandlerFunc {
 				s.IdempotencyAbandon(detached, key, endpoint)
 				return
 			}
-			if status >= 500 {
-				// Transient — let retries hit the handler again.
+			if status >= 500 || c.GetBool("idempotency_no_response_cache") {
+				// Transient or private response — never persist key-bearing tokens.
 				s.IdempotencyAbandon(detached, key, endpoint)
 				return
 			}

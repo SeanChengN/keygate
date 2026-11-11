@@ -3,6 +3,7 @@ import { Copy, Package, Pencil, Plus, Trash2 } from "lucide-react"
 import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
 import { EntityId } from "@/components/entity-id"
+import { AIPlanDialog } from "@/components/license-ai"
 import { showToast } from "@/components/toast"
 import {
   AlertDialog,
@@ -200,6 +201,8 @@ export default function PlansPage() {
                         </DataTableCell>
                         <DataTableCell>
                           <div className="flex gap-1">
+                            {products.find((pr) => pr.id === p.product_id)?.slug === "movaura-studio" &&
+                              prodType === "desktop" && <AIPlanDialog id={p.id} />}
                             {p.checkout_id && (
                               <Button
                                 variant="ghost"

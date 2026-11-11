@@ -163,12 +163,14 @@ func main() {
 	// Subkeys are purpose-isolated — ciphertext from one cannot decrypt
 	// under another.
 	var releaseSigner *service.ReleaseSigningService
+	var aiAEAD, previousAIAEAD *crypto.AESGCM
 	if cfg.IsMasterEncryptionKeyConfigured() {
 		masterRaw, err := hex.DecodeString(cfg.ReleaseKeyEncryptionKey)
 		if err != nil {
 			logger.Error("master key hex decode failed; license/release encryption disabled", "error", err)
 		} else {
 			licenseAEAD := crypto.MustDeriveAEAD(masterRaw, "license-key")
+			aiAEAD = crypto.MustDeriveAEAD(masterRaw, "license-ai")
 			releaseAEAD := crypto.MustDeriveAEAD(masterRaw, "release-signing-private-key")
 			var previousLicenseAEAD, previousReleaseAEAD *crypto.AESGCM
 			if cfg.ReleaseKeyEncryptionKeyPrevious != "" {
@@ -177,6 +179,7 @@ func main() {
 					log.Fatalf("RELEASE_KEY_ENCRYPTION_KEY_PREVIOUS: %v", decodeErr)
 				}
 				previousLicenseAEAD = crypto.MustDeriveAEAD(previousRaw, "license-key")
+				previousAIAEAD = crypto.MustDeriveAEAD(previousRaw, "license-ai")
 				previousReleaseAEAD = crypto.MustDeriveAEAD(previousRaw, "release-signing-private-key")
 				clear(previousRaw)
 			}
@@ -231,6 +234,12 @@ func main() {
 	expiryChecker := service.NewExpiryChecker(db, emailSvc, webhookSvc, logger)
 	meteredSyncer := service.NewMeteredBillingSyncer(db, logger)
 	adminH := handler.NewAdminHandler(db, webhookSvc, emailSvc, expiryChecker, meteredSyncer)
+	aiSvc := &service.AIService{Store: db, AEAD: aiAEAD, PreviousAEAD: previousAIAEAD, Client: service.NewJijiClient(), Email: emailSvc}
+	if err := aiSvc.Reencrypt(context.Background()); err != nil {
+		log.Fatalf("AI credential migration: %v", err)
+	}
+	adminH.AI = aiSvc
+	licenseSvc.AI = aiSvc
 	usageH := handler.NewUsageHandler(usageSvc)
 	seatH := handler.NewSeatHandler(seatSvc)
 	entitlementH := handler.NewEntitlementHandler(entitlementSvc)
@@ -266,6 +275,7 @@ func main() {
 	}
 
 	go webhookSvc.StartRetryLoop(ctx, webhookRetryInterval)
+	go aiSvc.Start(ctx)
 
 	go floatingSvc.StartCleanupLoop(ctx, time.Minute)
 
@@ -839,6 +849,10 @@ func main() {
 		admin.DELETE("/products/:id", adminH.DeleteProduct)
 
 		admin.GET("/plans", adminH.ListPlans)
+		admin.GET("/products/:id/ai-account", adminH.GetAIAccount)
+		admin.PUT("/products/:id/ai-account", adminH.PutAIAccount)
+		admin.GET("/plans/:id/ai", adminH.GetAIPlan)
+		admin.PUT("/plans/:id/ai", adminH.PutAIPlan)
 		admin.GET("/plans/:id", adminH.GetPlan)
 		admin.POST("/plans", adminH.CreatePlan)
 		admin.PUT("/plans/:id", adminH.UpdatePlan)
@@ -852,6 +866,9 @@ func main() {
 		licWrite.GET("/licenses", adminH.ListLicenses)
 		licWrite.GET("/licenses/export", adminH.ExportLicenses)
 		licWrite.GET("/licenses/:id", adminH.GetLicense)
+		licWrite.GET("/licenses/:id/ai", adminH.GetLicenseAI)
+		licWrite.PUT("/licenses/:id/ai", adminH.PutLicenseAI)
+		licWrite.POST("/licenses/:id/ai/:action", adminH.LicenseAIAction)
 		licWrite.POST("/licenses", adminH.CreateLicense)
 		licWrite.POST("/licenses/:id/refund", adminH.RefundLicense)
 		licWrite.POST("/licenses/:id/revoke", adminH.RevokeLicense)

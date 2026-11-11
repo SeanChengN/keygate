@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"database/sql"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -24,6 +25,7 @@ import (
 )
 
 type AdminHandler struct {
+	AI      *service.AIService
 	Store   *store.Store
 	Webhook *service.WebhookService
 	Email   *service.EmailService
@@ -1030,7 +1032,8 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 	// Email the customer their new license key. Best-effort: SMTP failure
 	// is logged inside SendLicenseCreated but doesn't fail the API call —
 	// the license is already persisted, and admin can resend manually.
-	if h.Email != nil && h.Email.IsConfigured() {
+	_, aiErr := h.Store.AIBinding(c, l.ID)
+	if h.Email != nil && h.Email.IsConfigured() && errors.Is(aiErr, sql.ErrNoRows) {
 		productName := ""
 		if prod, err := h.Store.FindProductByID(c, l.ProductID); err == nil {
 			productName = prod.Name
@@ -1042,6 +1045,13 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 	// this license and needs to pass the key to the customer. Every
 	// later read goes through RevealLicenseKey and is audited.
 	c.Header("Cache-Control", "no-store")
+	if ready, err := h.Store.AIDeliverable(c, l.ID); err != nil {
+		response.Internal(c)
+		return
+	} else if !ready {
+		response.Created(c, licenseWithKey{License: l, AIPending: true})
+		return
+	}
 	response.Created(c, licenseWithKey{License: l, LicenseKey: h.Store.DecryptLicenseKey(l)})
 }
 
@@ -1051,6 +1061,7 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 type licenseWithKey struct {
 	*model.License
 	LicenseKey string `json:"license_key"`
+	AIPending  bool   `json:"ai_pending,omitempty"`
 }
 
 // licenseWithHint is a licence payload with the last four characters of
@@ -1079,6 +1090,7 @@ func (h *AdminHandler) licenseKeyHint(l *model.License) string {
 // does not spray every customer's credential across logs, proxies and
 // browser caches. Each reveal is a deliberate act and is audited.
 func (h *AdminHandler) RevealLicenseKey(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	id := c.Param("id")
 	if !h.checkLicenseScope(c, id) {
 		return
@@ -1090,6 +1102,13 @@ func (h *AdminHandler) RevealLicenseKey(c *gin.Context) {
 	}
 
 	key := h.Store.DecryptLicenseKey(l)
+	if ready, err := h.Store.AIDeliverable(c, id); err != nil {
+		response.Internal(c)
+		return
+	} else if !ready {
+		response.Err(c, 409, "AI_PENDING", "AI key provisioning has not completed")
+		return
+	}
 	if key == "" {
 		// Ciphertext unreadable or the master key is gone —
 		// DecryptLicenseKey has already logged it and bumped the metric.

@@ -22,6 +22,7 @@ This file keeps only project scope, non-negotiable safety guardrails, and naviga
 | Task | Read as needed |
 | --- | --- |
 | Keygate source, licensing, or upstream sync | [AI Collaboration Guide: Scope and Licensing](docs/AI协作指南.md#2-范围与许可证) |
+| Movaura license AI credentials and jiji jobs | [License AI operations and migration](docs/LICENSE_AI.md) |
 | SafeLine, networking, Compose, or images | [AI Collaboration Guide: Deployment and Networking](docs/AI协作指南.md#3-部署与网络) and [Control-Plane Single-VPS Deployment Guide](../digital-warehousing-control-plane/deploy/keygate/README.md) |
 | Database, MinIO, backups, or recovery | [AI Collaboration Guide: Data and Backups](docs/AI协作指南.md#4-数据与备份) |
 | Tests, audits, or script checks | [AI Collaboration Guide: Validation and Delivery](docs/AI协作指南.md#5-验证与交付) |

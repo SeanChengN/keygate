@@ -1,0 +1,262 @@
+package handler
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/tabloy/keygate/internal/model"
+	"github.com/tabloy/keygate/internal/service"
+	"github.com/tabloy/keygate/internal/store"
+	"github.com/tabloy/keygate/pkg/response"
+	"github.com/uptrace/bun"
+)
+
+func (h *AdminHandler) aiReady(c *gin.Context) bool {
+	c.Header("Cache-Control", "no-store")
+	if h.AI == nil || h.AI.AEAD == nil {
+		response.Err(c, 503, "AI_DISABLED", "AI credential encryption is not configured")
+		return false
+	}
+	return true
+}
+func (h *AdminHandler) aiProduct(c *gin.Context, id string) bool {
+	p, err := h.Store.FindProductByID(c, id)
+	if err != nil || p.Slug != "movaura-studio" || p.Type != "desktop" {
+		response.BadRequest(c, "AI provisioning is restricted to the Movaura Studio desktop product")
+		return false
+	}
+	return requireKeyProductScope(c, id)
+}
+
+func (h *AdminHandler) GetAIAccount(c *gin.Context) {
+	if !h.aiReady(c) || !h.aiProduct(c, c.Param("id")) {
+		return
+	}
+	var row struct {
+		Enabled   bool      `json:"enabled"`
+		State     string    `json:"state"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}
+	err := h.Store.DB.NewSelect().Table("ai_provider_accounts").Column("enabled", "state", "updated_at").Where("product_id = ?", c.Param("id")).Scan(c, &row)
+	if errors.Is(err, sql.ErrNoRows) {
+		response.OK(c, gin.H{"enabled": false, "configured": false, "state": "unconfigured"})
+		return
+	}
+	if err != nil {
+		response.Internal(c)
+		return
+	}
+	response.OK(c, gin.H{"enabled": row.Enabled, "configured": true, "state": row.State, "updated_at": row.UpdatedAt})
+}
+func (h *AdminHandler) PutAIAccount(c *gin.Context) {
+	if !h.aiReady(c) || !h.aiProduct(c, c.Param("id")) {
+		return
+	}
+	var req struct {
+		Enabled      bool   `json:"enabled"`
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresAt    int64  `json:"expires_at"`
+	}
+	if c.ShouldBindJSON(&req) != nil {
+		response.BadRequest(c, "invalid account configuration")
+		return
+	}
+	var tokens *service.AIAccountTokens
+	if req.AccessToken != "" || req.RefreshToken != "" {
+		if len(req.AccessToken) > 16384 || len(req.RefreshToken) > 16384 {
+			response.BadRequest(c, "token is too long")
+			return
+		}
+		tokens = &service.AIAccountTokens{AccessToken: req.AccessToken, RefreshToken: req.RefreshToken, ExpiresAt: req.ExpiresAt}
+	}
+	if err := h.AI.SaveAccount(c, c.Param("id"), req.Enabled, tokens); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	h.Store.Audit(c, &model.AuditLog{Entity: "product", EntityID: c.Param("id"), Action: "ai_account_updated", ActorType: "admin", ActorID: adminID(c)})
+	h.GetAIAccount(c)
+}
+
+func (h *AdminHandler) GetAIPlan(c *gin.Context) {
+	if !h.aiReady(c) {
+		return
+	}
+	p, err := h.Store.FindPlanByID(c, c.Param("id"))
+	if err != nil {
+		response.NotFound(c, "plan not found")
+		return
+	}
+	if !h.aiProduct(c, p.ProductID) {
+		return
+	}
+	v, err := h.Store.AIPlan(c, p.ID)
+	if err != nil {
+		response.Internal(c)
+		return
+	}
+	response.OK(c, v.Config)
+}
+func (h *AdminHandler) PutAIPlan(c *gin.Context) {
+	if !h.aiReady(c) {
+		return
+	}
+	p, err := h.Store.FindPlanByID(c, c.Param("id"))
+	if err != nil {
+		response.NotFound(c, "plan not found")
+		return
+	}
+	if !h.aiProduct(c, p.ProductID) {
+		return
+	}
+	var req model.AIPlanSettings
+	if c.ShouldBindJSON(&req) != nil {
+		response.BadRequest(c, "invalid AI settings")
+		return
+	}
+	if err := service.ValidateAIConfig(req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	binding := ""
+	if req.Enabled {
+		if p.LicenseType != "subscription" || p.GraceDays != 0 {
+			response.BadRequest(c, "AI requires a subscription with zero grace")
+			return
+		}
+		binding, err = service.AIProfileBinding(p)
+		if err != nil {
+			response.BadRequest(c, err.Error())
+			return
+		}
+		if _, err = h.AI.Account(c, p.ProductID); err != nil {
+			response.BadRequest(c, err.Error())
+			return
+		}
+	}
+	if err := h.Store.SaveAIPlan(c, p.ID, &store.AIPlanRecord{Config: req, ProfileBinding: binding}); err != nil {
+		response.Internal(c)
+		return
+	}
+	h.Store.Audit(c, &model.AuditLog{Entity: "plan", EntityID: p.ID, Action: "ai_defaults_updated", ActorType: "admin", ActorID: adminID(c)})
+	response.OK(c, req)
+}
+
+func (h *AdminHandler) GetLicenseAI(c *gin.Context) {
+	if !h.aiReady(c) || !h.checkLicenseScope(c, c.Param("id")) {
+		return
+	}
+	b, err := h.Store.AIBinding(c, c.Param("id"))
+	if errors.Is(err, sql.ErrNoRows) {
+		response.OK(c, gin.H{"enrolled": false})
+		return
+	}
+	if err != nil {
+		response.Internal(c)
+		return
+	}
+	jobs, err := h.Store.AIJobs(c, b.LicenseID)
+	if err != nil {
+		response.Internal(c)
+		return
+	}
+	response.OK(c, gin.H{"enrolled": true, "binding": b, "jobs": jobs, "key_hint": func() string {
+		if b.RemoteID > 0 {
+			return "•••• (managed)"
+		}
+		return ""
+	}()})
+}
+func (h *AdminHandler) PutLicenseAI(c *gin.Context) {
+	if !h.aiReady(c) || !h.checkLicenseScope(c, c.Param("id")) {
+		return
+	}
+	var req model.AIPlanSettings
+	if c.ShouldBindJSON(&req) != nil {
+		response.BadRequest(c, "invalid limits")
+		return
+	}
+	req.Enabled = true
+	if err := service.ValidateAIConfig(req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	err := h.Store.DB.RunInTx(c, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.ExecContext(ctx, "SELECT id FROM licenses WHERE id = ? FOR UPDATE", c.Param("id")); err != nil {
+			return err
+		}
+		var b model.AIBinding
+		if err := tx.NewSelect().Model(&b).Where("license_id = ?", c.Param("id")).For("UPDATE").Scan(ctx); err != nil {
+			return err
+		}
+		if b.Config.GroupID != req.GroupID {
+			return errors.New("group changes require a new key; edit plan defaults for future issuance")
+		}
+		b.Config = req
+		b.State = "pending"
+		if _, err := tx.NewUpdate().Model(&b).Column("config", "state").WherePK().Exec(ctx); err != nil {
+			return err
+		}
+		return store.EnqueueAI(ctx, tx, b.LicenseID, "sync", "settings:"+uuid.NewString())
+	})
+	if err != nil {
+		response.BadRequest(c, "license AI configuration update failed")
+		return
+	}
+	h.Store.Audit(c, &model.AuditLog{Entity: "license", EntityID: c.Param("id"), Action: "ai_limits_updated", ActorType: "admin", ActorID: adminID(c)})
+	h.GetLicenseAI(c)
+}
+func (h *AdminHandler) LicenseAIAction(c *gin.Context) {
+	if !h.aiReady(c) || !h.checkLicenseScope(c, c.Param("id")) {
+		return
+	}
+	action := c.Param("action")
+	if action != "reset_quota" && action != "reset_rate" && action != "rotate" && action != "retry" {
+		response.BadRequest(c, "unknown AI action")
+		return
+	}
+	dedupe := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if dedupe == "" || len(dedupe) > 200 {
+		response.BadRequest(c, "Idempotency-Key is required")
+		return
+	}
+	err := h.Store.DB.RunInTx(c, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.ExecContext(ctx, "SELECT id FROM licenses WHERE id = ? FOR UPDATE", c.Param("id")); err != nil {
+			return err
+		}
+		var b model.AIBinding
+		if err := tx.NewSelect().Model(&b).Where("license_id = ?", c.Param("id")).For("UPDATE").Scan(ctx); err != nil {
+			return err
+		}
+		if action == "retry" {
+			var job model.AIJob
+			if err := tx.NewSelect().Model(&job).Where("license_id = ? AND state IN ('failed','uncertain')", b.LicenseID).OrderExpr("CASE WHEN state = 'uncertain' THEN 0 ELSE 1 END, created_at ASC").Limit(1).Scan(ctx); err != nil {
+				return err
+			}
+			if job.Phase == "reset_sent" {
+				return errors.New("reset result unknown; automatic replay refused")
+			}
+			_, err := tx.ExecContext(ctx, "UPDATE license_ai_jobs SET state = 'pending', last_error = '' WHERE id = ?", job.ID)
+			return err
+		}
+		var count int
+		if err := tx.NewRaw("SELECT count(*) FROM license_ai_jobs WHERE license_id = ? AND (state IN ('pending','running','uncertain') OR state = 'failed' AND (action <> 'sync' OR phase NOT IN ('','published')))", b.LicenseID).Scan(ctx, &count); err != nil {
+			return err
+		}
+		if count > 0 {
+			return errors.New("resolve pending or uncertain operation first")
+		}
+		return store.EnqueueAI(ctx, tx, b.LicenseID, action, action+":"+dedupe)
+	})
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	h.Store.Audit(c, &model.AuditLog{Entity: "license", EntityID: c.Param("id"), Action: "ai_" + action, ActorType: "admin", ActorID: adminID(c)})
+	h.GetLicenseAI(c)
+}

@@ -60,6 +60,24 @@ func postJSON(r *gin.Engine, key, body string) *httptest.ResponseRecorder {
 	return w
 }
 
+func TestIdempotencySensitiveResponseNotPersisted(t *testing.T) {
+	s := requireStore(t)
+	defer s.Close()
+	r := makeApp(s, func(c *gin.Context) {
+		c.Set("idempotency_no_response_cache", true)
+		c.Header("Cache-Control", "no-store")
+		c.JSON(200, gin.H{"token": "SYNTHETIC-SENSITIVE-LEASE"})
+	})
+	key := "sensitive-lease-" + time.Now().Format("150405.000000000")
+	if w := postJSON(r, key, `{}`); w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("sensitive response failed")
+	}
+	var count int
+	if err := s.DB.NewRaw("SELECT count(*) FROM idempotency_keys WHERE key=?", key).Scan(context.Background(), &count); err != nil || count != 0 {
+		t.Fatal("AI credential response persisted in idempotency cache")
+	}
+}
+
 // TestIdempotency_5xxNotCached — when the handler returns 500, the
 // middleware MUST NOT cache the response. The slot is abandoned so
 // a retry hits the handler again. Without this, a transient DB blip

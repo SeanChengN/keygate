@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Ban, Check, Copy, Eye, Package, Pause, Pencil, Play, Plus, RefreshCw, Search, Trash2 } from "lucide-react"
 import { useEffect, useState } from "react"
 import { Link, useSearchParams } from "react-router-dom"
+import { LicenseAICard } from "@/components/license-ai"
 import { showToast } from "@/components/toast"
 import {
   AlertDialog,
@@ -100,10 +101,14 @@ export default function LicensesPage() {
 
   const createMut = useMutation({
     mutationFn: admin.createLicense,
-    onSuccess: () => {
+    onSuccess: (created) => {
       qc.invalidateQueries({ queryKey: ["admin", "licenses"] })
       setCreating(false)
-      showToast(t("toast.licenseCreated"), "success")
+      showToast(
+        created.ai_pending ? "许可证已创建，AI Key 准备中；同步成功后可交付。" : t("toast.licenseCreated"),
+        "success",
+      )
+      if (created.ai_pending) setViewing(created.id)
     },
   })
 
@@ -700,6 +705,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
 
             <TabsContent value="info">
               <div className="space-y-6">
+                {lic.product?.slug === "movaura-studio" && lic.product.type === "desktop" && <LicenseAICard id={id} />}
                 {/* Info */}
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>

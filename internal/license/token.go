@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/tabloy/keygate/internal/model"
 )
 
 // VerifyToken is the offline-verifiable license payload returned by
@@ -26,21 +28,22 @@ import (
 // arbitrary license tokens. Ed25519 puts the signing capability
 // behind a key that never leaves the server.
 type VerifyToken struct {
-	Version     int            `json:"ver,omitempty"`
-	LicenseID   string         `json:"lid"`
-	ProductID   string         `json:"pid"`
-	PlanID      string         `json:"pln"`
-	PlanName    string         `json:"pnm,omitempty"`
-	LicenseType string         `json:"lty,omitempty"`
-	Status      string         `json:"sts"`
-	Identifier  string         `json:"did"`
-	Features    map[string]any `json:"ftr,omitempty"`
-	IssuedAt    int64          `json:"iat"`
-	ExpiresAt   int64          `json:"exp"`
-	ValidUntil  *int64         `json:"vld,omitempty"`
-	GraceDays   int            `json:"grc"`
-	Nonce       string         `json:"nce"`           // unique per-issuance to prevent replay
-	Fingerprint string         `json:"fpr,omitempty"` // v3: SHA256(device public key); legacy: identifier+product_id
+	AICredential *model.AICredential `json:"ai_credential,omitempty"`
+	Version      int                 `json:"ver,omitempty"`
+	LicenseID    string              `json:"lid"`
+	ProductID    string              `json:"pid"`
+	PlanID       string              `json:"pln"`
+	PlanName     string              `json:"pnm,omitempty"`
+	LicenseType  string              `json:"lty,omitempty"`
+	Status       string              `json:"sts"`
+	Identifier   string              `json:"did"`
+	Features     map[string]any      `json:"ftr,omitempty"`
+	IssuedAt     int64               `json:"iat"`
+	ExpiresAt    int64               `json:"exp"`
+	ValidUntil   *int64              `json:"vld,omitempty"`
+	GraceDays    int                 `json:"grc"`
+	Nonce        string              `json:"nce"`           // unique per-issuance to prevent replay
+	Fingerprint  string              `json:"fpr,omitempty"` // v3: SHA256(device public key); legacy: identifier+product_id
 }
 
 // PrivateKeyFromHex parses a 32-byte ed25519 seed (64 hex chars) and

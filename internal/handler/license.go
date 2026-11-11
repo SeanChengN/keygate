@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/base64"
 	"errors"
 	"strings"
 
@@ -36,6 +37,7 @@ func NewLicenseHandler(svc *service.LicenseService) *LicenseHandler {
 }
 
 func (h *LicenseHandler) Activate(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	var req struct {
 		LicenseKey     string `json:"license_key" binding:"required"`
 		Identifier     string `json:"identifier" binding:"required"`
@@ -64,6 +66,12 @@ func (h *LicenseHandler) Activate(c *gin.Context) {
 		ProductID:      firstNonEmpty(str(productID), strings.TrimSpace(req.ProductID)),
 		DeviceProof:    req.deviceProofRequest.serviceInput(),
 	})
+	if result != nil {
+		payload, _ := base64.RawURLEncoding.DecodeString(strings.SplitN(result.Token, ".", 2)[0])
+		if strings.Contains(string(payload), `"ai_credential"`) {
+			c.Set("idempotency_no_response_cache", true)
+		}
+	}
 	if err != nil {
 		writeAppErr(c, err)
 		return
@@ -72,6 +80,7 @@ func (h *LicenseHandler) Activate(c *gin.Context) {
 }
 
 func (h *LicenseHandler) Verify(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	var req struct {
 		LicenseKey string `json:"license_key" binding:"required"`
 		Identifier string `json:"identifier" binding:"required"`

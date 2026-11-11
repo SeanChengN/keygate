@@ -35,7 +35,7 @@ jobs:
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: "1.25.13"
+          go-version: "1.26.11"
 
       - name: Lint
         run: go vet ./...
@@ -48,13 +48,21 @@ jobs:
           TEST_DATABASE_URL: postgres://keygate:keygate@localhost:5432/keygate?sslmode=disable
         run: go test -count=1 -run "Atomic" ./internal/store/
 
+      - name: License AI integration tests
+        env:
+          AI_TEST_DATABASE_URL: postgres://keygate:keygate@localhost:5432/keygate?sslmode=disable
+        run: |
+          go test -count=1 -run '^TestAI' ./internal/service/
+          go test -count=1 -run '^TestAI' ./internal/handler/
+          TEST_DATABASE_URL="$AI_TEST_DATABASE_URL" go test -count=1 -run '^TestIdempotencySensitiveResponseNotPersisted$' ./internal/middleware/
+
       - name: Build
         run: |
           go build -o /dev/null ./cmd/server
           go build -o /dev/null ./cmd/admin-recover
 
       - name: Vulnerability scan
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   frontend:
     name: Frontend

@@ -30,6 +30,7 @@ type FailureTracker interface {
 type licenseSigningKey = ed25519.PrivateKey
 
 type LicenseService struct {
+	AI         *AIService
 	store      *store.Store
 	signingKey licenseSigningKey
 	logger     *slog.Logger
@@ -626,6 +627,13 @@ func (s *LicenseService) signTokenAt(lic *model.License, identifier string, now 
 		ExpiresAt:   s.tokenExpiresAt(lic, now).Unix(),
 		GraceDays:   s.effectiveGraceDays(lic),
 		Fingerprint: fingerprint,
+	}
+	if s.AI != nil {
+		credential, err := s.AI.Credential(context.Background(), lic)
+		if err != nil {
+			return "", err
+		}
+		t.AICredential = credential
 	}
 	if lic.ValidUntil != nil {
 		validUntil := lic.ValidUntil.Unix()

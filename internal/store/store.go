@@ -516,8 +516,12 @@ func (s *Store) CreateLicense(ctx context.Context, l *model.License) error {
 	if err := s.prepareLicenseForInsert(l); err != nil {
 		return err
 	}
-	_, err := s.DB.NewInsert().Model(l).Exec(ctx)
-	return err
+	return s.DB.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewInsert().Model(l).Exec(ctx); err != nil {
+			return err
+		}
+		return s.issueAI(ctx, tx, l)
+	})
 }
 
 // CreateLicenseWithSubscription creates a license and, for subscription/trial plans,
@@ -560,6 +564,9 @@ func (s *Store) CreateLicenseWithSubscription(ctx context.Context, l *model.Lice
 		}
 	}
 
+	if err := s.issueAI(ctx, tx, l); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
