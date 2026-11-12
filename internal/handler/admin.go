@@ -1109,7 +1109,7 @@ func (h *AdminHandler) RevealLicenseKey(c *gin.Context) {
 	if ready, err := h.Store.AIDeliverable(c, id); err != nil {
 		response.Internal(c)
 		return
-	} else if !ready {
+	} else if !ready && !(l.Status == model.StatusPendingActivation && l.IssuanceBatchID != "") {
 		response.Err(c, 409, "AI_PENDING", "AI key provisioning has not completed")
 		return
 	}
@@ -1156,7 +1156,26 @@ func (h *AdminHandler) RevokeLicense(c *gin.Context) {
 }
 
 func (h *AdminHandler) DeleteLicense(c *gin.Context) {
+	id := c.Param("id")
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
+	if h.AI != nil && h.AI.AEAD != nil {
+		task, err := h.AI.RequestDeletion(c, id, adminID(c), c.ClientIP())
+		if err != nil {
+			h.licenseDeleteError(c, err)
+			return
+		}
+		if task != nil {
+			c.Header("Cache-Control", "no-store")
+			c.JSON(202, response.Envelope{Success: true, Data: deletionView(task)})
+			return
+		}
+	}
 	_, err := h.Store.DeleteRevokedUnpaidLicense(c, c.Param("id"), adminID(c), c.ClientIP())
+	h.licenseDeleteError(c, err)
+}
+func (h *AdminHandler) licenseDeleteError(c *gin.Context, err error) {
 	var databaseError pgdriver.Error
 	if errors.As(err, &databaseError) && databaseError.Field('C') == "55P03" {
 		err = store.ErrAIDeleteBusy

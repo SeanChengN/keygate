@@ -44,6 +44,7 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   if (!res.ok) {
     if (
       path.includes("/ai") ||
+      /^\/admin\/licenses\/[^/]+(?:\/key|\/deletion)?$/.test(path) ||
       path.startsWith("/admin/licenses/batches") ||
       path.startsWith("/admin/licenses/key-exports")
     ) {
@@ -74,6 +75,15 @@ function patch<T>(path: string, body?: unknown) {
 }
 function del<T>(path: string) {
   return request<T>(path, { method: "DELETE" })
+}
+
+export type LicenseDeletion = {
+  id?: string
+  license_id?: string
+  state: string
+  last_error_code?: string
+  completed_targets?: number
+  total_targets?: number
 }
 
 export type AIAccountMetadata = {
@@ -336,7 +346,8 @@ export const admin = {
   setLicenseValidUntil: (id: string, validUntil: string) =>
     post<License>(`/admin/licenses/${id}/valid-until`, { valid_until: validUntil }),
   revokeLicense: (id: string) => post(`/admin/licenses/${id}/revoke`),
-  deleteLicense: (id: string) => del<void>(`/admin/licenses/${id}`),
+  deleteLicense: (id: string) => del<LicenseDeletion | undefined>(`/admin/licenses/${id}`),
+  licenseDeletion: (id: string) => get<LicenseDeletion>(`/admin/licenses/${id}/deletion`),
   suspendLicense: (id: string) => post(`/admin/licenses/${id}/suspend`),
   reinstateLicense: (id: string) => post(`/admin/licenses/${id}/reinstate`),
   refundLicense: (id: string) => post(`/admin/licenses/${id}/refund`),

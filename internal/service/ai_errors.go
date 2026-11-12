@@ -20,6 +20,9 @@ func AIErrorCode(err error) string {
 		return "AI_CONFIG_CHANGED"
 	}
 	msg := err.Error()
+	if msg == "AI_DELETE_IN_PROGRESS" {
+		return "AI_DELETE_IN_PROGRESS"
+	}
 	switch {
 	case strings.Contains(msg, "zero grace"):
 		return "AI_PLAN_INELIGIBLE"

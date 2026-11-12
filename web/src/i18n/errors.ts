@@ -3,6 +3,17 @@ import en from "./locales/en"
 import zh from "./locales/zh"
 
 const codes: Record<string, TranslationKeys> = {
+  AI_PENDING: "errors.aiPending",
+  LICENSE_KEY_UNAVAILABLE: "errors.licenseKeyUnavailable",
+  AI_DELETE_BUSY: "errors.deleteBusy",
+  AI_DELETE_IN_PROGRESS: "errors.deleteBusy",
+  AI_DELETE_UNCONFIRMED: "errors.deleteGuard",
+  DELETE_RESULT_UNCONFIRMED: "errors.deleteUnconfirmed",
+  AI_DELETE_LOCAL_FAILED: "errors.deleteLocalFailed",
+  LICENSE_NOT_FOUND: "errors.notFound",
+  LICENSE_NOT_REVOKED: "errors.licenseNotRevoked",
+  LICENSE_PAYMENT_LINKED: "errors.paymentLinked",
+
   AI_GROUP_INVALID: "ai.groupInvalid",
   AI_QUOTA_INVALID: "ai.quotaInvalid",
   AI_RATE_INVALID: "ai.rateInvalid",

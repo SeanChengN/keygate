@@ -136,6 +136,12 @@ func (f *fakeAI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		k := f.keys[id]
 		if k == nil {
 			w.WriteHeader(404)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 404, "message": "api key not found"})
+			return
+		}
+		if r.Method == "DELETE" {
+			delete(f.keys, id)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
 			return
 		}
 		if r.Method == "PUT" {

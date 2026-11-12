@@ -57,6 +57,8 @@ func TestAIAdminScopeAndRedaction(t *testing.T) {
 	r.POST("/inventory", h.CreateInventoryBatch)
 	r.GET("/licenses/:id/ai", h.GetLicenseAI)
 	r.GET("/licenses/:id/key", h.RevealLicenseKey)
+	r.DELETE("/licenses/:id", h.DeleteLicense)
+	r.GET("/licenses/:id/deletion", h.GetLicenseDeletion)
 	r.POST("/licenses/:id/ai/provision", h.ProvisionLicenseAI)
 	r.POST("/plans/:id/ai/provision-batches", h.CreateAIProvisionBatch)
 	r.GET("/plans/:id/ai/provision-preview", h.PreviewAIProvision)
@@ -134,6 +136,48 @@ func TestAIAdminScopeAndRedaction(t *testing.T) {
 	r.ServeHTTP(rec, req)
 	if rec.Code != 201 {
 		t.Fatalf("unlimited inventory rejected: %d %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		Data store.InventoryBatch `json:"data"`
+	}
+	if err = json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	var stock model.License
+	if err = s.DB.NewSelect().Model(&stock).Where("issuance_batch_id=?", created.Data.ID).Scan(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.AIBinding(ctx, stock.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = request("/licenses/"+stock.ID+"/key", false)
+	if w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("pending stock reveal rejected")
+	}
+	after, err := s.AIBinding(ctx, stock.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := s.FindLicenseByID(ctx, stock.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Status != model.StatusPendingActivation || fresh.ValidUntil != nil || fresh.FirstExportID != "" || after.RemoteID != 0 || !after.Anchor.Equal(before.Anchor) || after.State != "waiting_activation" {
+		t.Fatal("reveal caused stock activation or provisioning")
+	}
+	if w = request("/licenses/"+stock.ID+"/key", true); w.Code != 403 {
+		t.Fatal("foreign stock reveal accepted")
+	}
+	// An unactivated stock key has no remote deletion work and returns 204.
+	if err = s.RevokeLicense(ctx, stock.ID); err != nil {
+		t.Fatal(err)
+	}
+	deleteReq := httptest.NewRequest("DELETE", "/licenses/"+stock.ID, nil)
+	deleteResp := httptest.NewRecorder()
+	r.ServeHTTP(deleteResp, deleteReq)
+	if deleteResp.Code != 204 {
+		t.Fatalf("keyless stock deletion: %d", deleteResp.Code)
 	}
 	// Never serialize private credential attachments through ordinary records.
 	raw, err := json.Marshal(&b)

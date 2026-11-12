@@ -194,7 +194,7 @@ func (s *AIService) SaveAccount(ctx context.Context, id string, enabled bool, to
 		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO ai_provider_accounts(product_id, enabled, secret) VALUES (?, ?, ?) ON CONFLICT (product_id) DO UPDATE SET enabled = EXCLUDED.enabled, secret = EXCLUDED.secret, state = 'ready', updated_at = now()`, id, enabled, raw)
+		_, err = tx.ExecContext(ctx, `INSERT INTO ai_provider_accounts(product_id, enabled, secret) VALUES (?, ?, ?) ON CONFLICT (product_id) DO UPDATE SET enabled = EXCLUDED.enabled, secret = EXCLUDED.secret, credential_revision = ai_provider_accounts.credential_revision + 1, state = 'ready', updated_at = now()`, id, enabled, raw)
 		return err
 	})
 }
@@ -238,12 +238,16 @@ func (s *AIService) Tick(ctx context.Context) {
 	if s.AEAD == nil {
 		return
 	}
+	s.processDeletions(ctx)
 	// Scan only explicit bindings. Legacy licenses cannot be enrolled by this loop.
 	var bindings []*model.AIBinding
 	if s.Store.DB.NewSelect().Model(&bindings).Scan(ctx) != nil {
 		return
 	}
 	for _, b := range bindings {
+		if deleting, err := store.AIDeleting(ctx, s.Store.DB, b.LicenseID); err != nil || deleting {
+			continue
+		}
 		lic, err := s.Store.FindLicenseByID(ctx, b.LicenseID)
 		if err != nil {
 			continue
@@ -286,6 +290,11 @@ func (s *AIService) process(ctx context.Context, job *model.AIJob) {
 		var locked bool
 		if err := tx.NewRaw("SELECT pg_try_advisory_xact_lock(hashtextextended(?, 0))", "ai-license:"+job.LicenseID).Scan(ctx, &locked); err != nil || !locked {
 			return err
+		}
+		if deleting, err := store.AIDeleting(ctx, tx, job.LicenseID); err != nil {
+			return err
+		} else if deleting {
+			return nil
 		}
 		lic := new(model.License)
 		if err := tx.NewSelect().Model(lic).Where("id = ?", job.LicenseID).For("UPDATE").Scan(ctx); err != nil {

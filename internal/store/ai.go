@@ -66,6 +66,11 @@ func (s *Store) SaveAIPlan(ctx context.Context, id string, v *AIPlanRecord) erro
 			return err
 		}
 		for _, licenseID := range ids {
+			if deleting, err := AIDeleting(ctx, tx, licenseID); err != nil {
+				return err
+			} else if deleting {
+				continue
+			}
 			if _, err := tx.ExecContext(ctx, `UPDATE license_ai_bindings SET config=?::jsonb, profile_binding=?, plan_revision=?, state=CASE WHEN (SELECT status FROM licenses WHERE id=license_id)='pending_activation' THEN 'waiting_activation' WHEN state='uncertain' THEN state ELSE 'pending' END, updated_at=now() WHERE license_id=?`, string(boundRaw), v.ProfileBinding, v.Revision, licenseID); err != nil {
 				return err
 			}
@@ -128,6 +133,11 @@ func (s *Store) issueAI(ctx context.Context, tx bun.IDB, l *model.License) error
 }
 
 func EnqueueAI(ctx context.Context, db bun.IDB, id, action, dedupe string) error {
+	if deleting, err := AIDeleting(ctx, db, id); err != nil {
+		return err
+	} else if deleting {
+		return ErrAIDeletionInProgress
+	}
 	j := &model.AIJob{ID: newID(), LicenseID: id, Action: action, DedupeKey: dedupe, State: "pending", CreatedAt: time.Now(), NextAttemptAt: time.Now()}
 	_, err := db.NewInsert().Model(j).On("CONFLICT (license_id, dedupe_key) DO NOTHING").Exec(ctx)
 	return err

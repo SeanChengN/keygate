@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Ban, Check, Copy, Eye, Package, Pause, Pencil, Play, Plus, RefreshCw, Search, Trash2 } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Link, useSearchParams } from "react-router-dom"
 import { LicenseAICard } from "@/components/license-ai"
 import { InventoryManager } from "@/components/license-inventory"
@@ -36,6 +36,7 @@ import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useSiteConfig } from "@/hooks/use-site-config"
 import { useI18n } from "@/i18n"
+import { errorMessage } from "@/i18n/errors"
 import { admin } from "@/lib/api"
 import { formatDate, statusColor } from "@/lib/utils"
 
@@ -650,7 +651,7 @@ function CreateLicenseDialog({
 }
 
 function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const { timezone } = useSiteConfig()
   const qc = useQueryClient()
   const { data: lic, isLoading } = useQuery({
@@ -660,6 +661,36 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const [copied, setCopied] = useState(false)
   const [changingPlan, setChangingPlan] = useState(false)
   const [deleteConfirmation, setDeleteConfirmation] = useState("")
+  const deletion = useQuery({
+    queryKey: ["admin", "license-deletion", id],
+    queryFn: () => admin.licenseDeletion(id),
+    retry: false,
+    refetchInterval: (query) =>
+      query.state.data && ["pending", "running", "finalizing"].includes(query.state.data.state) ? 2000 : false,
+  })
+  const deleting = !!deletion.data && deletion.data.state !== "none" && deletion.data.state !== "done"
+  const deletionBusy = !!deletion.data && ["pending", "running", "finalizing"].includes(deletion.data.state)
+  const finishDeletion = useCallback(() => {
+    void qc.invalidateQueries({ queryKey: ["admin", "licenses"] })
+    void qc.invalidateQueries({ queryKey: ["admin", "customer"] })
+    showToast(t("toast.licenseDeleted"), "success")
+    onClose()
+  }, [qc, t, onClose])
+  useEffect(() => {
+    if (deletion.data?.state === "done") {
+      let active = true
+      const confirm = () =>
+        void admin.getLicense(id).catch((error: Error & { status?: number }) => {
+          if (active && error.status === 404) finishDeletion()
+        })
+      confirm()
+      const timer = setInterval(confirm, 2000)
+      return () => {
+        active = false
+        clearInterval(timer)
+      }
+    }
+  }, [deletion.data?.state, id, finishDeletion])
   // null = not editing; "" = editing with an empty value (perpetual
   // licenses only; subscriptions must always retain a period end).
   const [editingValidUntil, setEditingValidUntil] = useState<string | null>(null)
@@ -685,7 +716,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const deleteMut = useMutation({
     mutationFn: async () => {
       try {
-        await admin.deleteLicense(id)
+        return await admin.deleteLicense(id)
       } catch (failure) {
         const result = failure as Error & { status?: number; code?: string }
         if (
@@ -704,13 +735,13 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
         throw failure
       }
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["admin", "licenses"] })
-      qc.invalidateQueries({ queryKey: ["admin", "customer"] })
-      showToast(t("toast.licenseDeleted"), "success")
-      onClose()
+    onSuccess: (task) => {
+      if (task) {
+        qc.setQueryData(["admin", "license-deletion", id], task)
+        void deletion.refetch()
+      } else finishDeletion()
     },
-    onError: (error: Error) => showToast(error.message, "error"),
+    onError: (error: Error) => showToast(errorMessage(error, locale), "error"),
   })
   const suspendMut = useMutation({
     mutationFn: () => admin.suspendLicense(id),
@@ -766,17 +797,15 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
     mutationFn: () => admin.revealLicenseKey(id),
     onSuccess: (r) => setRevealedKey(r.license_key),
   })
-  const copyKey = () => {
-    const write = (key: string) => {
-      navigator.clipboard.writeText(key)
+  const copyKey = async () => {
+    try {
+      const key = revealedKey || (await revealMut.mutateAsync()).license_key
+      await navigator.clipboard.writeText(key)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
+    } catch (error) {
+      showToast((error as { code?: string }).code ? errorMessage(error, locale) : t("common.copyFailed"), "error")
     }
-    if (revealedKey) {
-      write(revealedKey)
-      return
-    }
-    revealMut.mutate(undefined, { onSuccess: (r) => write(r.license_key) })
   }
 
   return (
@@ -786,6 +815,30 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
           <DialogTitle>{t("licenses.detail")}</DialogTitle>
           <DialogDescription>{lic?.email}</DialogDescription>
         </DialogHeader>
+        {deleting && (
+          <div role="status" className="space-y-2 rounded-lg border p-3">
+            <p>{deletionBusy ? t("licenses.deleting") : t("licenses.deleteFailed")}</p>
+            <p>
+              {t("licenses.deleteProgress", {
+                done: deletion.data?.completed_targets || 0,
+                total: deletion.data?.total_targets || 0,
+              })}
+            </p>
+            {deletion.data?.last_error_code && (
+              <p className="text-destructive">{errorMessage({ code: deletion.data.last_error_code }, locale)}</p>
+            )}
+            {!deletionBusy && (
+              <Button disabled={deleteMut.isPending} onClick={() => deleteMut.mutate()}>
+                {t("licenses.deleteRetry")}
+              </Button>
+            )}
+          </div>
+        )}
+        {deletion.error && (
+          <p role="alert" className="text-destructive">
+            {errorMessage(deletion.error, locale)}
+          </p>
+        )}
         {isLoading || !lic ? (
           <div className="h-48 animate-pulse bg-muted rounded-lg" />
         ) : (
@@ -821,7 +874,13 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                           <Eye className="h-3 w-3" />
                         </Button>
                       )}
-                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={copyKey}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        onClick={() => void copyKey()}
+                        disabled={revealMut.isPending}
+                      >
                         {copied ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
                       </Button>
                     </div>
@@ -1069,7 +1128,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                         <Button
                           variant="destructive"
                           size="sm"
-                          disabled={deleteMut.isPending}
+                          disabled={deleteMut.isPending || deletionBusy}
                           onClick={() => setDeleteConfirmation("")}
                         >
                           <Trash2 className="h-4 w-4 mr-1" /> {t("licenses.deletePermanently")}
@@ -1078,7 +1137,9 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                       <AlertDialogContent>
                         <AlertDialogHeader>
                           <AlertDialogTitle>{t("licenses.deletePermanently")}</AlertDialogTitle>
-                          <AlertDialogDescription>{t("licenses.deleteConfirm")}</AlertDialogDescription>
+                          <AlertDialogDescription>
+                            {t("licenses.deleteConfirm")} {t("licenses.deleteRemoteWarning")}
+                          </AlertDialogDescription>
                         </AlertDialogHeader>
                         <div className="space-y-2 mt-2">
                           <Label htmlFor="license-delete-confirmation">{t("licenses.deleteConfirmLabel")}</Label>
@@ -1096,7 +1157,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                           </AlertDialogCancel>
                           <AlertDialogAction
                             className="bg-destructive text-white hover:bg-destructive/90"
-                            disabled={deleteConfirmation !== "DELETE" || deleteMut.isPending}
+                            disabled={deleteConfirmation !== "DELETE" || deleteMut.isPending || deletionBusy}
                             onClick={() => deleteMut.mutate()}
                           >
                             {deleteMut.isPending ? t("common.loading") : t("licenses.deletePermanently")}

@@ -213,6 +213,11 @@ func (h *AdminHandler) PutLicenseAI(c *gin.Context) {
 		if _, err := tx.ExecContext(ctx, "SELECT id FROM licenses WHERE id = ? FOR UPDATE", c.Param("id")); err != nil {
 			return err
 		}
+		if deleting, err := store.AIDeleting(ctx, tx, c.Param("id")); err != nil {
+			return err
+		} else if deleting {
+			return store.ErrAIDeletionInProgress
+		}
 		var b model.AIBinding
 		if err := tx.NewSelect().Model(&b).Where("license_id = ?", c.Param("id")).For("UPDATE").Scan(ctx); err != nil {
 			return err
@@ -248,6 +253,11 @@ func (h *AdminHandler) LicenseAIAction(c *gin.Context) {
 	err := h.Store.DB.RunInTx(c, nil, func(ctx context.Context, tx bun.Tx) error {
 		if _, err := tx.ExecContext(ctx, "SELECT id FROM licenses WHERE id = ? FOR UPDATE", c.Param("id")); err != nil {
 			return err
+		}
+		if deleting, err := store.AIDeleting(ctx, tx, c.Param("id")); err != nil {
+			return err
+		} else if deleting {
+			return store.ErrAIDeletionInProgress
 		}
 		var b model.AIBinding
 		if err := tx.NewSelect().Model(&b).Where("license_id = ?", c.Param("id")).For("UPDATE").Scan(ctx); err != nil {

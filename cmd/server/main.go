@@ -905,6 +905,7 @@ func main() {
 		admin.GET("/licenses/key-exports/:id/download", adminH.DownloadKeyExport)
 		admin.GET("/licenses/:id/key", adminH.RevealLicenseKey)
 		admin.DELETE("/licenses/:id", adminH.DeleteLicense)
+		admin.GET("/licenses/:id/deletion", adminH.GetLicenseDeletion)
 
 		admin.GET("/api-keys", adminH.ListAPIKeys)
 		admin.POST("/api-keys", adminH.CreateAPIKey)

@@ -41,6 +41,36 @@ func deleteSafeAIBinding(ctx context.Context, tx bun.Tx, id string) error {
 	if err != nil {
 		return err
 	}
+	var deletion model.AIDeletion
+	deletionErr := tx.NewSelect().Model(&deletion).Where("license_id=?", id).Scan(ctx)
+	if deletionErr == nil {
+		if deletion.State != "finalizing" || len(deletion.Targets) == 0 {
+			return ErrAIDeleteUnconfirmed
+		}
+		ids := map[int64]bool{}
+		for _, target := range deletion.Targets {
+			ids[target.ID] = true
+		}
+		if b.RemoteID > 0 && !ids[b.RemoteID] || b.CandidateID > 0 && !ids[b.CandidateID] {
+			return ErrAIDeleteUnconfirmed
+		}
+		for _, target := range deletion.Targets {
+			if !target.Verified || target.Phase != "absent" {
+				return ErrAIDeleteUnconfirmed
+			}
+		}
+		if _, err := tx.NewDelete().Model((*model.AIJob)(nil)).Where("license_id=?", id).Exec(ctx); err != nil {
+			return err
+		}
+		_, err := tx.NewDelete().Model(&b).WherePK().Exec(ctx)
+		return err
+	}
+	if !errors.Is(deletionErr, sql.ErrNoRows) {
+		return deletionErr
+	}
+	if b.RemoteID > 0 || b.CandidateID > 0 {
+		return ErrAIDeleteUnconfirmed
+	}
 	pending, err := tx.NewSelect().Model((*model.AIJob)(nil)).Where("license_id=? AND state <> 'done'", id).Exists(ctx)
 	if err != nil {
 		return err

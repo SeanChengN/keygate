@@ -38,6 +38,7 @@ const labels = {
 }
 const states: Record<string, string> = {
   pending: "ai.pending",
+  deleting: "ai.deleting",
   waiting_activation: "ai.waiting_activation",
   running: "ai.pending",
   synced: "ai.synced",

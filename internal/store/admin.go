@@ -367,6 +367,9 @@ func (s *Store) DeleteRevokedUnpaidLicense(ctx context.Context, id, actorID, ipA
 	if _, err := tx.NewInsert().Model(audit).Exec(ctx); err != nil {
 		return nil, err
 	}
+	if _, err := tx.NewRaw("UPDATE license_ai_deletions SET state='done',last_error_code='',updated_at=now() WHERE license_id=?", id).Exec(ctx); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		if s.confirmLicenseDeletion(id, audit.ID) {
 			return deleted, nil

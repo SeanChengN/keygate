@@ -126,9 +126,15 @@ func TestAIManagementPropagationProvisionAndDelete(t *testing.T) {
 	if _, err = s.DeleteRevokedUnpaidLicense(ctx, old.ID, "test-admin", ""); !errors.Is(err, store.ErrAIDeleteUnconfirmed) {
 		t.Fatal("deleted before disable sync confirmation")
 	}
-	ai.Tick(ctx)
-	_, err = s.DeleteRevokedUnpaidLicense(ctx, old.ID, "test-admin", "")
+	_, err = ai.RequestDeletion(ctx, old.ID, "test-admin", "")
 	check(err)
+	ai.Tick(ctx)
+	if _, err = s.FindLicenseByID(ctx, old.ID); err == nil {
+		t.Fatal("deletion did not finish")
+	}
+	if _, exists := f.keys[keyID]; exists {
+		t.Fatal("remote key survived license deletion")
+	}
 	if _, err = s.AIBinding(ctx, old.ID); err == nil {
 		t.Fatal("AI binding survived deletion")
 	}

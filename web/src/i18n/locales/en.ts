@@ -1,4 +1,21 @@
 const en = {
+  "ai.deleting": "Deleting",
+  "licenses.deleting": "Deleting associated keys and license. Please wait.",
+  "licenses.deleteFailed": "Deletion is incomplete; the record is retained. Resolve the error and retry.",
+  "licenses.deleteRetry": "Retry deletion",
+  "licenses.deleteRemoteWarning":
+    "The current and unpublished candidate Jiji API keys will also be permanently deleted. Historical rotated keys are retained.",
+  "licenses.deleteProgress": "Confirmed {done} / {total} associated keys deleted.",
+  "errors.aiPending": "AI provisioning is incomplete. Wait or contact the administrator.",
+  "errors.licenseKeyUnavailable": "The license key could not be decrypted. Ask the administrator to check encryption.",
+  "errors.deleteBusy": "The license is being synchronized or deleted. Check progress shortly.",
+  "errors.deleteUnconfirmed": "The deletion result needs confirmation. Review remote records before retrying.",
+  "errors.deleteLocalFailed":
+    "Associated keys were processed; local finalization is incomplete. Retry to finish local cleanup.",
+  "errors.licenseNotRevoked": "Revoke the license before permanently deleting it.",
+  "errors.paymentLinked": "A payment-linked license cannot be permanently deleted.",
+  "errors.deleteGuard": "Resolve uncertain creation and confirm all associated keys before deletion.",
+
   "ai.keyId": "Key ID",
   "ai.tokensSaved": "Saved; leave blank to retain",
   "ai.configured": "Management tokens are saved encrypted",

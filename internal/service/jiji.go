@@ -95,6 +95,13 @@ func (c *JijiClient) request(ctx context.Context, token, method, path string, in
 		var business struct {
 			Code string `json:"code"`
 		}
+		var missing struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		}
+		if res.StatusCode == 404 && json.Unmarshal(raw, &missing) == nil && missing.Code == 404 && missing.Message == "api key not found" {
+			code = "key_not_found"
+		}
 		if json.Unmarshal(raw, &business) == nil {
 			switch business.Code {
 			case "insufficient_quota", "API_KEY_DISABLED", "API_KEY_EXPIRED":
@@ -170,4 +177,12 @@ func (c *JijiClient) Refresh(ctx context.Context, t *AIAccountTokens) (*AIAccoun
 		return nil, &AIProviderError{Code: "invalid_refresh", Uncertain: true}
 	}
 	return &AIAccountTokens{result.AccessToken, result.RefreshToken, time.Now().Unix() + result.ExpiresIn}, nil
+}
+
+func (c *JijiClient) Delete(ctx context.Context, token string, id int64) error {
+	return c.request(ctx, token, "DELETE", fmt.Sprintf("/keys/%d", id), nil, nil)
+}
+func IsJijiKeyAbsent(err error) bool {
+	var pe *AIProviderError
+	return errors.As(err, &pe) && pe.Status == 404 && pe.Code == "key_not_found"
 }
