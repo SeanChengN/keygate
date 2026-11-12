@@ -41,6 +41,7 @@ type AIBinding struct {
 	CandidateSecret []byte         `json:"-"`
 	State           string         `json:"state"`
 	LastError       string         `json:"last_error"`
+	LastErrorCode   string         `bun:"-" json:"last_error_code,omitempty"`
 	RemoteView      map[string]any `bun:"type:jsonb" json:"remote"`
 	Anchor          time.Time      `json:"anchor"`
 	Timezone        string         `json:"timezone"`
@@ -57,6 +58,7 @@ type AIJob struct {
 	Phase         string    `json:"phase"`
 	Attempts      int       `json:"attempts"`
 	LastError     string    `json:"last_error"`
+	LastErrorCode string    `bun:"-" json:"last_error_code,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	NextAttemptAt time.Time `json:"next_attempt_at"`
 }

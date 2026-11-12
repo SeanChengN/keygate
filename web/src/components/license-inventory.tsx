@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useRef, useState } from "react"
+import { Link } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
@@ -7,11 +8,12 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useI18n } from "@/i18n"
-import { admin, inventory } from "@/lib/api"
+import { errorMessage } from "@/i18n/errors"
+import { admin, inventory, type Plan } from "@/lib/api"
 import { formatDate } from "@/lib/utils"
 
 export function InventoryManager({ selected, clear }: { selected: string[]; clear: () => void }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
   const [product, setProduct] = useState("")
@@ -22,12 +24,14 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
   const [exportIDs, setExportIDs] = useState<string[] | null>(null)
   const createKey = useRef(crypto.randomUUID())
   const exportKey = useRef(crypto.randomUUID())
-  const [downloadError, setDownloadError] = useState("")
+  const [downloadError, setDownloadError] = useState<Error | null>(null)
   const products = useQuery({ queryKey: ["admin", "products"], queryFn: () => admin.listProducts() })
   const plans = useQuery({
-    queryKey: ["inventory-plans", product],
+    queryKey: ["admin", "plans", product],
     queryFn: () => admin.listPlans(product),
-    enabled: !!product,
+    enabled: open && !!product,
+    staleTime: 0,
+    refetchOnMount: "always",
   })
   const batches = useQuery({ queryKey: ["inventory-batches"], queryFn: inventory.batches, enabled: open })
   const current = useQuery({
@@ -51,11 +55,11 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
     },
   })
   const download = async (id: string) => {
-    setDownloadError("")
+    setDownloadError(null)
     try {
       await inventory.download(id)
     } catch (error) {
-      setDownloadError((error as Error).message)
+      setDownloadError(error as Error)
     }
   }
   const exportMut = useMutation({
@@ -77,6 +81,15 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
     createKey.current = crypto.randomUUID()
     create.reset()
   }
+  const planReason = (value: Plan) => {
+    if (!value.active) return t("inventory.planInactive")
+    if (value.license_type !== "subscription") return t("inventory.planSubscription")
+    if (!["month", "year"].includes(value.billing_interval || "")) return t("inventory.planInterval")
+    if (value.grace_days !== 0) return t("inventory.planGrace", { days: value.grace_days })
+    return ""
+  }
+  const selectedPlan = plans.data?.plans.find((value) => value.id === plan)
+  const invalidPlan = !selectedPlan || !!planReason(selectedPlan)
   return (
     <>
       <Button variant="outline" onClick={() => setOpen(true)}>
@@ -97,7 +110,7 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
             className="grid gap-4 sm:grid-cols-2"
             onSubmit={(event) => {
               event.preventDefault()
-              create.mutate()
+              if (!invalidPlan) create.mutate()
             }}
           >
             <Label className="grid gap-2">
@@ -137,19 +150,12 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {plans.data?.plans
-                    .filter(
-                      (value) =>
-                        value.active &&
-                        value.license_type === "subscription" &&
-                        ["month", "year"].includes(value.billing_interval || "") &&
-                        value.grace_days === 0,
-                    )
-                    .map((value) => (
-                      <SelectItem key={value.id} value={value.id}>
-                        {value.name}
-                      </SelectItem>
-                    ))}
+                  {plans.data?.plans.map((value) => (
+                    <SelectItem key={value.id} value={value.id} disabled={!!planReason(value)}>
+                      {value.name}
+                      {planReason(value) ? ` — ${planReason(value)}` : ""}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </Label>
@@ -178,13 +184,25 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
                 }}
               />
             </Label>
-            <Button className="sm:col-span-2" disabled={!plan || quantity < 1 || quantity > 500 || create.isPending}>
+            <Button
+              className="sm:col-span-2"
+              disabled={invalidPlan || plans.isFetching || quantity < 1 || quantity > 500 || create.isPending}
+            >
               {t("inventory.create")}
             </Button>
           </form>
           {create.error && (
             <p role="alert" className="text-destructive">
-              {create.error.message}
+              {errorMessage(create.error, locale)}
+            </p>
+          )}
+          <p className="text-sm text-muted-foreground">{t("inventory.planRequirements")}</p>
+          <Button variant="link" asChild>
+            <Link to="/admin/plans">{t("inventory.managePlans")}</Link>
+          </Button>
+          {(products.error || plans.error) && (
+            <p role="alert" className="text-destructive">
+              {errorMessage(products.error || plans.error, locale)}
             </p>
           )}
           <Label className="grid gap-2">
@@ -242,11 +260,10 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
           )}
           {(exportMut.error || current.error || batches.error || exports.error || downloadError) && (
             <p role="alert" className="text-destructive">
-              {exportMut.error?.message ||
-                current.error?.message ||
-                batches.error?.message ||
-                exports.error?.message ||
-                downloadError}
+              {errorMessage(
+                exportMut.error || current.error || batches.error || exports.error || downloadError,
+                locale,
+              )}
             </p>
           )}
           <h3 className="font-medium">{t("inventory.history")}</h3>

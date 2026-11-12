@@ -223,7 +223,7 @@ func TestAIProvisioningIntegration(t *testing.T) {
 		return l
 	}
 	legacy := makeLicense()
-	cfg := model.AIPlanSettings{Enabled: true, GroupID: 53, Quota: .01, Rate5H: .02, Rate1D: .03, Rate7D: .04}
+	cfg := model.AIPlanSettings{Enabled: true, GroupID: 53, Quota: 0, Rate5H: .02, Rate1D: .03, Rate7D: .04}
 	check(s.SaveAIPlan(ctx, plan.ID, &store.AIPlanRecord{Config: cfg, ProfileBinding: binding}))
 	f := &fakeAI{keys: map[int64]*JijiKey{}}
 	server := httptest.NewServer(f)

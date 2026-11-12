@@ -16,7 +16,7 @@ import (
 // These explicit credential-export endpoints are never available to API keys.
 func inventoryAdmin(c *gin.Context) bool {
 	if _, exists := c.Get("api_key"); exists {
-		response.Forbidden(c, "管理员会话才可管理寄售库存和导出完整许可证")
+		response.Err(c, 403, "INVENTORY_ADMIN_REQUIRED", "administrator session required")
 		return false
 	}
 	return true
@@ -53,7 +53,7 @@ func (h *AdminHandler) CreateInventoryBatch(c *gin.Context) {
 	}
 	key := c.GetHeader("Idempotency-Key")
 	if c.ShouldBindJSON(&req) != nil || !store.ValidIdempotencyKey(key) || req.Quantity < 1 || req.Quantity > 500 || len(req.Notes) > 2000 {
-		response.BadRequest(c, "需要产品、方案、1–500 张数量及 Idempotency-Key")
+		response.Err(c, 400, "INVENTORY_REQUEST_INVALID", "需要产品、方案、1–500 张数量及 Idempotency-Key")
 		return
 	}
 	if !h.aiReady(c) || !h.aiProduct(c, req.ProductID) {
@@ -61,12 +61,25 @@ func (h *AdminHandler) CreateInventoryBatch(c *gin.Context) {
 	}
 	p, err := h.Store.FindPlanByID(c, req.PlanID)
 	if err != nil || p.ProductID != req.ProductID {
-		response.BadRequest(c, "方案与产品不匹配")
+		response.Err(c, 400, "INVENTORY_PLAN_MISMATCH", "方案与产品不匹配")
 		return
 	}
 	cfg, err := h.AI.ProvisionConfig(c, p.ID)
 	if err != nil {
-		response.BadRequest(c, err.Error())
+		aiError(c, err, 400)
+		return
+	}
+	metadata, err := h.AI.AccountMetadata(c, req.ProductID)
+	if err != nil {
+		aiError(c, err, 500)
+		return
+	}
+	if !metadata.Configured {
+		aiError(c, errors.New("jiji account is not configured"), 409)
+		return
+	}
+	if !metadata.Enabled || metadata.State != "ready" {
+		aiError(c, errors.New("jiji account needs administrator attention"), 409)
 		return
 	}
 	b := &store.InventoryBatch{ProductID: req.ProductID, PlanID: req.PlanID, ActorID: adminID(c), RequestKey: key, Quantity: req.Quantity, Notes: req.Notes}
@@ -125,7 +138,7 @@ func (h *AdminHandler) CreateKeyExport(c *gin.Context) {
 	}
 	key := c.GetHeader("Idempotency-Key")
 	if c.ShouldBindJSON(&req) != nil || !store.ValidIdempotencyKey(key) {
-		response.BadRequest(c, "license_ids and Idempotency-Key required")
+		response.Err(c, 400, "INVENTORY_REQUEST_INVALID", "license_ids and Idempotency-Key required")
 		return
 	}
 	for _, id := range req.LicenseIDs {

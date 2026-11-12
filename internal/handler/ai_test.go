@@ -52,6 +52,9 @@ func TestAIAdminScopeAndRedaction(t *testing.T) {
 	})
 	r.GET("/products/:id/ai-account", h.GetAIAccount)
 	r.PUT("/products/:id/ai-account", h.PutAIAccount)
+	r.PUT("/plans/:id/ai", h.PutAIPlan)
+	r.GET("/plans/:id/ai", h.GetAIPlan)
+	r.POST("/inventory", h.CreateInventoryBatch)
 	r.GET("/licenses/:id/ai", h.GetLicenseAI)
 	r.GET("/licenses/:id/key", h.RevealLicenseKey)
 	r.POST("/licenses/:id/ai/provision", h.ProvisionLicenseAI)
@@ -67,6 +70,9 @@ func TestAIAdminScopeAndRedaction(t *testing.T) {
 		return w
 	}
 	w := request("/products/"+p.ID+"/ai-account", false)
+	if !strings.Contains(w.Body.String(), "expires_at") || !strings.Contains(w.Body.String(), "updated_at") {
+		t.Fatal("saved metadata missing")
+	}
 	if w.Code != 200 || strings.Contains(w.Body.String(), "SYNTHETIC") || w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("unsafe metadata: %d", w.Code)
 	}
@@ -92,6 +98,42 @@ func TestAIAdminScopeAndRedaction(t *testing.T) {
 	w = request("/licenses/"+b.LicenseID+"/ai", false)
 	if w.Code != 200 || strings.Contains(w.Body.String(), "synthetic-") || strings.Contains(w.Body.String(), "candidate_secret") || strings.Contains(w.Body.String(), "\"secret\"") {
 		t.Fatal("AI details leaked credential")
+	}
+	// End-to-end management contract: zero quota is valid, grace remains gated.
+	plan := &model.Plan{ProductID: p.ID, Name: "Unlimited handler", Slug: store.NewID(), LicenseType: "subscription", BillingInterval: "year", GraceDays: 7, Active: true, LicenseModel: "standard"}
+	if err = s.CreatePlan(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.CreateEntitlement(ctx, &model.Entitlement{PlanID: plan.ID, Feature: "studio.ai_profile", ValueType: "string", Value: `{"provider_id":"jiji","base_url":"https://api-slb.jiji.cc/v1","protocol":"openai"}`}); err != nil {
+		t.Fatal(err)
+	}
+	update := func(body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		q := httptest.NewRequest("PUT", "/plans/"+plan.ID+"/ai", strings.NewReader(body))
+		r.ServeHTTP(w, q)
+		return w
+	}
+	body := `{"enabled":false,"group_id":53,"quota":0,"rate_limit_5h":0,"rate_limit_1d":0,"rate_limit_7d":0}`
+	if w = update(body); w.Code != 400 || !strings.Contains(w.Body.String(), "AI_PLAN_INELIGIBLE") {
+		t.Fatal("grace error not specific")
+	}
+	if _, err = s.DB.ExecContext(ctx, "UPDATE plans SET grace_days=0 WHERE id=?", plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if w = update(body); w.Code != 200 {
+		t.Fatalf("zero quota rejected: %d", w.Code)
+	}
+	if w = update(strings.Replace(body, `"quota":0`, `"quota":0.000000001`, 1)); w.Code != 400 || !strings.Contains(w.Body.String(), "AI_QUOTA_INVALID") {
+		t.Fatal("tiny positive accepted")
+	}
+	// Batch readiness and unlimited settings use the same backend rules.
+	stockBody, _ := json.Marshal(map[string]any{"product_id": p.ID, "plan_id": plan.ID, "quantity": 1})
+	req := httptest.NewRequest("POST", "/inventory", strings.NewReader(string(stockBody)))
+	req.Header.Set("Idempotency-Key", store.NewID())
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != 201 {
+		t.Fatalf("unlimited inventory rejected: %d %s", rec.Code, rec.Body.String())
 	}
 	// Never serialize private credential attachments through ordinary records.
 	raw, err := json.Marshal(&b)

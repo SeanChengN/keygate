@@ -28,7 +28,7 @@ func aiProvisionError(c *gin.Context, err error) {
 	if errors.Is(err, service.ErrAIConfigChanged) {
 		response.Err(c, 409, "AI_CONFIG_CHANGED", "AI 配置已变化，请重新预览")
 	} else {
-		response.Err(c, 409, "AI_PROVISION_UNAVAILABLE", err.Error())
+		aiError(c, err, 409)
 	}
 }
 func (h *AdminHandler) PreviewAIProvision(c *gin.Context) {
@@ -53,7 +53,7 @@ func (h *AdminHandler) CreateAIProvisionBatch(c *gin.Context) {
 		IDs      []string `json:"license_ids"`
 	}
 	if c.ShouldBindJSON(&req) != nil {
-		response.BadRequest(c, "invalid provisioning request")
+		response.Err(c, 400, "AI_REQUEST_INVALID", "invalid provisioning request")
 		return
 	}
 	b, err := h.AI.Provision(c, p.ID, adminID(c), strings.TrimSpace(c.GetHeader("Idempotency-Key")), req.Revision, req.IDs)

@@ -47,7 +47,7 @@ func TestAIInventoryProofAndAsyncDelivery(t *testing.T) {
 	check(err)
 	profile, err := AIProfileBinding(plan)
 	check(err)
-	cfg := &store.AIPlanRecord{Config: model.AIPlanSettings{GroupID: 53, Quota: .01}, ProfileBinding: profile}
+	cfg := &store.AIPlanRecord{Config: model.AIPlanSettings{GroupID: 53, Quota: 0}, ProfileBinding: profile}
 	check(s.SaveAIPlan(ctx, plan.ID, cfg))
 	batch := &store.InventoryBatch{ProductID: p.ID, PlanID: plan.ID, ActorID: "test", RequestKey: store.NewID(), Quantity: 1}
 	check(s.CreateInventory(ctx, batch, cfg))
@@ -106,6 +106,9 @@ func TestAIInventoryProofAndAsyncDelivery(t *testing.T) {
 	check(json.Unmarshal(raw, &claims))
 	if claims["ai_credential"] == nil {
 		t.Fatal("signed credential missing")
+	}
+	if len(fake.keys) != 1 || fake.keys[1].Quota != 0 {
+		t.Fatal("inventory lost unlimited quota")
 	}
 	if fake.creates != 1 {
 		t.Fatal("duplicate provider key")

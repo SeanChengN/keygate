@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/url"
 	"strings"
 	"time"
@@ -56,18 +55,10 @@ func (s *AIService) open(raw []byte, aad string, v any) error {
 }
 
 func ValidateAIConfig(c model.AIPlanSettings) error {
-	if !c.Enabled {
-		return nil
+	if !c.Enabled && c.GroupID == 0 {
+		c.GroupID = 1 // An unconfigured disabled plan still validates monetary values.
 	}
-	if c.GroupID <= 0 || c.Quota < 0.00000001 {
-		return errors.New("group and positive monthly USD quota are required")
-	}
-	for _, v := range []float64{c.Quota, c.Rate5H, c.Rate1D, c.Rate7D} {
-		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > 1000000 {
-			return errors.New("invalid USD limit")
-		}
-	}
-	return nil
+	return c.ValidateLimits()
 }
 
 // AIProfileBinding matches Python's JSON array encoding in package_ai.binding.

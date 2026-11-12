@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -27,7 +26,7 @@ func (h *AdminHandler) aiReady(c *gin.Context) bool {
 func (h *AdminHandler) aiProduct(c *gin.Context, id string) bool {
 	p, err := h.Store.FindProductByID(c, id)
 	if err != nil || p.Slug != "movaura-studio" || p.Type != "desktop" {
-		response.BadRequest(c, "AI provisioning is restricted to the Movaura Studio desktop product")
+		response.Err(c, 400, "AI_PRODUCT_INVALID", "AI provisioning is restricted to the Movaura Studio desktop product")
 		return false
 	}
 	return requireKeyProductScope(c, id)
@@ -37,21 +36,12 @@ func (h *AdminHandler) GetAIAccount(c *gin.Context) {
 	if !h.aiReady(c) || !h.aiProduct(c, c.Param("id")) {
 		return
 	}
-	var row struct {
-		Enabled   bool      `json:"enabled"`
-		State     string    `json:"state"`
-		UpdatedAt time.Time `json:"updated_at"`
-	}
-	err := h.Store.DB.NewSelect().Table("ai_provider_accounts").Column("enabled", "state", "updated_at").Where("product_id = ?", c.Param("id")).Scan(c, &row)
-	if errors.Is(err, sql.ErrNoRows) {
-		response.OK(c, gin.H{"enabled": false, "configured": false, "state": "unconfigured"})
-		return
-	}
+	metadata, err := h.AI.AccountMetadata(c, c.Param("id"))
 	if err != nil {
-		response.Internal(c)
+		aiError(c, err, 500)
 		return
 	}
-	response.OK(c, gin.H{"enabled": row.Enabled, "configured": true, "state": row.State, "updated_at": row.UpdatedAt})
+	response.OK(c, metadata)
 }
 func (h *AdminHandler) PutAIAccount(c *gin.Context) {
 	if !h.aiReady(c) || !h.aiProduct(c, c.Param("id")) {
@@ -64,19 +54,19 @@ func (h *AdminHandler) PutAIAccount(c *gin.Context) {
 		ExpiresAt    int64  `json:"expires_at"`
 	}
 	if c.ShouldBindJSON(&req) != nil {
-		response.BadRequest(c, "invalid account configuration")
+		response.Err(c, 400, "AI_REQUEST_INVALID", "invalid account configuration")
 		return
 	}
 	var tokens *service.AIAccountTokens
 	if req.AccessToken != "" || req.RefreshToken != "" {
 		if len(req.AccessToken) > 16384 || len(req.RefreshToken) > 16384 {
-			response.BadRequest(c, "token is too long")
+			response.Err(c, 400, "AI_TOKENS_INVALID", "token is too long")
 			return
 		}
 		tokens = &service.AIAccountTokens{AccessToken: req.AccessToken, RefreshToken: req.RefreshToken, ExpiresAt: req.ExpiresAt}
 	}
 	if err := h.AI.SaveAccount(c, c.Param("id"), req.Enabled, tokens); err != nil {
-		response.BadRequest(c, err.Error())
+		aiError(c, err, 400)
 		return
 	}
 	h.Store.Audit(c, &model.AuditLog{Entity: "product", EntityID: c.Param("id"), Action: "ai_account_updated", ActorType: "admin", ActorID: adminID(c)})
@@ -124,17 +114,17 @@ func (h *AdminHandler) PutAIPlan(c *gin.Context) {
 	}
 	var req model.AIPlanSettings
 	if c.ShouldBindJSON(&req) != nil {
-		response.BadRequest(c, "invalid AI settings")
+		response.Err(c, 400, "AI_REQUEST_INVALID", "invalid AI settings")
 		return
 	}
 	if err := service.ValidateAIConfig(req); err != nil {
-		response.BadRequest(c, err.Error())
+		aiError(c, err, 400)
 		return
 	}
 	binding := ""
 	validate := req
 	validate.Enabled = true
-	if req.GroupID <= 0 || req.Quota <= 0 {
+	if req.GroupID <= 0 {
 		var count int
 		err := h.Store.DB.NewRaw("SELECT count(*) FROM license_ai_bindings b JOIN licenses l ON l.id=b.license_id WHERE l.plan_id=?", p.ID).Scan(c, &count)
 		if err != nil {
@@ -142,34 +132,34 @@ func (h *AdminHandler) PutAIPlan(c *gin.Context) {
 			return
 		}
 		if count > 0 {
-			response.BadRequest(c, "已有绑定的方案必须保留有效分组和正数额度")
+			response.Err(c, 400, "AI_GROUP_INVALID", "enrolled plans require a positive group ID")
 			return
 		}
 	}
 	if req.Enabled || req.GroupID > 0 || req.Quota > 0 {
 		if err := service.ValidateAIConfig(validate); err != nil {
-			response.BadRequest(c, err.Error())
+			aiError(c, err, 400)
 			return
 		}
 		if p.LicenseType != "subscription" || p.GraceDays != 0 {
-			response.BadRequest(c, "AI requires a subscription with zero grace")
+			response.Err(c, 400, "AI_PLAN_INELIGIBLE", "AI requires a subscription with zero grace")
 			return
 		}
 		binding, err = service.AIProfileBinding(p)
 		if err != nil {
-			response.BadRequest(c, err.Error())
+			aiError(c, err, 400)
 			return
 		}
 		if req.Enabled {
 			if _, err = h.AI.Account(c, p.ProductID); err != nil {
-				response.BadRequest(c, err.Error())
+				aiError(c, err, 400)
 				return
 			}
 		}
 	}
 	record := &store.AIPlanRecord{Config: req, ProfileBinding: binding}
 	if err := h.Store.SaveAIPlan(c, p.ID, record); err != nil {
-		response.Internal(c)
+		aiError(c, err, 500)
 		return
 	}
 	h.Store.Audit(c, &model.AuditLog{Entity: "plan", EntityID: p.ID, Action: "ai_defaults_updated", ActorType: "admin", ActorID: adminID(c)})
@@ -194,6 +184,10 @@ func (h *AdminHandler) GetLicenseAI(c *gin.Context) {
 		response.Internal(c)
 		return
 	}
+	b.LastErrorCode = service.AIErrorCode(errorText(b.LastError))
+	for _, job := range jobs {
+		job.LastErrorCode = service.AIErrorCode(errorText(job.LastError))
+	}
 	response.OK(c, gin.H{"enrolled": true, "binding": b, "jobs": jobs, "key_hint": func() string {
 		if b.RemoteID > 0 {
 			return "•••• (managed)"
@@ -207,12 +201,12 @@ func (h *AdminHandler) PutLicenseAI(c *gin.Context) {
 	}
 	var req model.AIPlanSettings
 	if c.ShouldBindJSON(&req) != nil {
-		response.BadRequest(c, "invalid limits")
+		response.Err(c, 400, "AI_REQUEST_INVALID", "invalid limits")
 		return
 	}
 	req.Enabled = true
 	if err := service.ValidateAIConfig(req); err != nil {
-		response.BadRequest(c, err.Error())
+		aiError(c, err, 400)
 		return
 	}
 	err := h.Store.DB.RunInTx(c, nil, func(ctx context.Context, tx bun.Tx) error {
@@ -231,7 +225,7 @@ func (h *AdminHandler) PutLicenseAI(c *gin.Context) {
 		return store.EnqueueAI(ctx, tx, b.LicenseID, "sync", "settings:"+uuid.NewString())
 	})
 	if err != nil {
-		response.BadRequest(c, "license AI configuration update failed")
+		response.Err(c, 400, "AI_OPERATION_FAILED", "license AI configuration update failed")
 		return
 	}
 	h.Store.Audit(c, &model.AuditLog{Entity: "license", EntityID: c.Param("id"), Action: "ai_limits_updated", ActorType: "admin", ActorID: adminID(c)})
@@ -243,12 +237,12 @@ func (h *AdminHandler) LicenseAIAction(c *gin.Context) {
 	}
 	action := c.Param("action")
 	if action != "reset_quota" && action != "reset_rate" && action != "rotate" && action != "retry" {
-		response.BadRequest(c, "unknown AI action")
+		response.Err(c, 400, "AI_REQUEST_INVALID", "unknown AI action")
 		return
 	}
 	dedupe := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
 	if dedupe == "" || len(dedupe) > 200 {
-		response.BadRequest(c, "Idempotency-Key is required")
+		response.Err(c, 400, "AI_REQUEST_INVALID", "Idempotency-Key is required")
 		return
 	}
 	err := h.Store.DB.RunInTx(c, nil, func(ctx context.Context, tx bun.Tx) error {
@@ -280,9 +274,19 @@ func (h *AdminHandler) LicenseAIAction(c *gin.Context) {
 		return store.EnqueueAI(ctx, tx, b.LicenseID, action, action+":"+dedupe)
 	})
 	if err != nil {
-		response.BadRequest(c, err.Error())
+		aiError(c, err, 400)
 		return
 	}
 	h.Store.Audit(c, &model.AuditLog{Entity: "license", EntityID: c.Param("id"), Action: "ai_" + action, ActorType: "admin", ActorID: adminID(c)})
 	h.GetLicenseAI(c)
+}
+
+func errorText(message string) error {
+	if message == "" {
+		return nil
+	}
+	return errors.New(message)
+}
+func aiError(c *gin.Context, err error, status int) {
+	response.Err(c, status, service.AIErrorCode(err), "AI operation could not be completed")
 }

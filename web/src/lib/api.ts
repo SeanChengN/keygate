@@ -1,3 +1,5 @@
+import { clientError } from "@/i18n/errors"
+
 const BASE = `${import.meta.env.VITE_API_URL || ""}/api/v1`
 
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
@@ -8,12 +10,8 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
       ...opts,
       headers: { "Content-Type": "application/json", ...opts?.headers },
     })
-  } catch (e) {
-    // Network-level failure (server down, DNS, CORS). fetch() throws
-    // a TypeError here; we surface a friendly message instead of
-    // "Failed to fetch" which is meaningless to end users.
-    const reason = e instanceof Error ? e.message : String(e)
-    throw new Error(`Network error: ${reason}. Is the server reachable?`)
+  } catch {
+    throw clientError("NETWORK_ERROR")
   }
 
   // Handle session expiry: redirect to login on 401
@@ -22,7 +20,7 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
     if (!window.location.pathname.startsWith("/login") && path !== "/portal/me") {
       window.location.href = "/login"
     }
-    throw new Error("Session expired")
+    throw clientError("SESSION_EXPIRED", 401)
   }
 
   if (res.status === 204) return undefined as T
@@ -31,7 +29,9 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   // from a proxy, server crash mid-response, HTML error page, etc.)
   // doesn't produce the cryptic "Unexpected end of JSON input" — that
   // error confuses users who clicked a normal button.
-  const raw = await res.text()
+  const raw = await res.text().catch(() => {
+    throw clientError("NETWORK_ERROR")
+  })
   let json: any = null
   if (raw) {
     try {
@@ -42,6 +42,13 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
+    if (
+      path.includes("/ai") ||
+      path.startsWith("/admin/licenses/batches") ||
+      path.startsWith("/admin/licenses/key-exports")
+    ) {
+      throw clientError(json?.error?.code || "REQUEST_FAILED", res.status)
+    }
     const msg =
       json?.error?.message ||
       (typeof json?.error === "string" ? json.error : null) ||
@@ -69,6 +76,14 @@ function del<T>(path: string) {
   return request<T>(path, { method: "DELETE" })
 }
 
+export type AIAccountMetadata = {
+  enabled: boolean
+  configured: boolean
+  state: string
+  expires_at: number | null
+  updated_at: string | null
+}
+
 export type AILimits = {
   enabled: boolean
   group_id: number
@@ -88,13 +103,14 @@ export type LicenseAI = {
     config: AILimits
     state: string
     last_error: string
+    last_error_code?: string
     remote_id: number
     revision: number
     anchor: string
     timezone: string
     remote: Record<string, string | number>
   }
-  jobs?: { id: string; action: string; state: string; phase: string; last_error: string }[]
+  jobs?: { id: string; action: string; state: string; phase: string; last_error: string; last_error_code?: string }[]
 }
 export type InventoryBatch = { id: string; product_id: string; plan_id: string; quantity: number; created_at: string }
 export type InventoryItem = { id: string; status: string; first_export_id?: string }
@@ -119,12 +135,19 @@ export const inventory = {
     const response = await fetch(`${BASE}/admin/licenses/key-exports/${encodeURIComponent(id)}/download`, {
       credentials: "include",
       cache: "no-store",
+    }).catch(() => {
+      throw clientError("NETWORK_ERROR")
     })
     if (!response.ok) {
       const value = await response.json().catch(() => null)
-      throw new Error(value?.error?.message || `Download failed (${response.status})`)
+      throw clientError(
+        response.status === 401 ? "SESSION_EXPIRED" : value?.error?.code || "REQUEST_FAILED",
+        response.status,
+      )
     }
-    const blob = await response.blob()
+    const blob = await response.blob().catch(() => {
+      throw clientError("NETWORK_ERROR")
+    })
     const url = URL.createObjectURL(blob)
     const link = document.createElement("a")
     link.href = url
@@ -134,9 +157,8 @@ export const inventory = {
   },
 }
 export const licenseAI = {
-  account: (id: string) =>
-    get<{ enabled: boolean; configured: boolean; state: string }>(`/admin/products/${id}/ai-account`),
-  saveAccount: (id: string, value: unknown) => put(`/admin/products/${id}/ai-account`, value),
+  account: (id: string) => get<AIAccountMetadata>(`/admin/products/${id}/ai-account`),
+  saveAccount: (id: string, value: unknown) => put<AIAccountMetadata>(`/admin/products/${id}/ai-account`, value),
   plan: (id: string) => get<AIPlan>(`/admin/plans/${id}/ai`),
   savePlan: (id: string, value: AILimits) =>
     put<{ revision: number; affected: number }>(`/admin/plans/${id}/ai`, value),

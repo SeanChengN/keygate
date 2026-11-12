@@ -103,6 +103,16 @@ func TestAIManagementPropagationProvisionAndDelete(t *testing.T) {
 	if b.RemoteID != keyID || string(b.Secret) != secret || f.keys[keyID].QuotaUsed != .006 || f.keys[keyID].Usage5H != .002 || f.keys[keyID].GroupID != 35 || f.resets != 0 {
 		t.Fatal("group sync changed key or reset usage")
 	}
+	// Switching an existing key to unlimited is a configuration update only.
+	cfg.Quota = 0
+	record = &store.AIPlanRecord{Config: cfg, ProfileBinding: profile}
+	check(s.SaveAIPlan(ctx, plan.ID, record))
+	ai.Tick(ctx)
+	b, err = s.AIBinding(ctx, old.ID)
+	check(err)
+	if b.Config.Quota != 0 || f.keys[keyID].Quota != 0 || b.RemoteID != keyID || string(b.Secret) != secret || f.keys[keyID].QuotaUsed != .006 || f.keys[keyID].Usage5H != .002 || f.resets != 0 || !f.keys[keyID].ExpiresAt.Equal(end) {
+		t.Fatal("unlimited sync changed key, consumption, expiry or reset usage")
+	}
 	check(s.SuspendLicense(ctx, old.ID))
 	ai.Tick(ctx)
 	cfg.GroupID = 36

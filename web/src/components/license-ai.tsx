@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ChevronDown, MoreHorizontal } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import {
@@ -21,6 +21,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useSiteConfig } from "@/hooks/use-site-config"
 import { useI18n } from "@/i18n"
+import { errorMessage } from "@/i18n/errors"
 import type en from "@/i18n/locales/en"
 
 type TranslationKeys = keyof typeof en
@@ -45,6 +46,8 @@ const states: Record<string, string> = {
   uncertain: "ai.uncertain",
   ready: "ai.ready",
   attention: "ai.attention",
+  unconfigured: "ai.unconfigured",
+  refreshing: "ai.pending",
   skipped: "ai.skipped",
   removed: "ai.removed",
 }
@@ -83,15 +86,18 @@ function Limits({
   )
 }
 function Failure({ error }: { error: Error | null }) {
+  const { locale } = useI18n()
   return error ? (
     <p role="alert" className="text-sm text-destructive">
-      {error.message}
+      {errorMessage(error, locale)}
     </p>
   ) : null
 }
 
 export function AIAccountDialog({ id }: { id: string }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
+  const qc = useQueryClient()
+  const dirty = useRef(false)
   const { timezone } = useSiteConfig()
   const stateLabel = useAIState()
   const [open, setOpen] = useState(false),
@@ -103,7 +109,7 @@ export function AIAccountDialog({ id }: { id: string }) {
   const expiryValid =
     Number.isSafeInteger(expiryMillis) && Math.floor(expiryMillis / 1000) > Math.floor(Date.now() / 1000)
   const expiryPreview = Number.isFinite(expiryMillis)
-    ? new Intl.DateTimeFormat(undefined, {
+    ? new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en-US", {
         timeZone: timezone || "UTC",
         dateStyle: "medium",
         timeStyle: "medium",
@@ -113,11 +119,15 @@ export function AIAccountDialog({ id }: { id: string }) {
     queryKey: ["ai-account", id],
     queryFn: () => licenseAI.account(id),
     enabled: open,
+    staleTime: 0,
     retry: false,
   })
   useEffect(() => {
-    if (query.data) setEnabled(query.data.enabled)
-  }, [query.data])
+    if (open && query.data && !dirty.current) {
+      setEnabled(query.data.enabled)
+      setExpires(query.data.expires_at ? String(query.data.expires_at * 1000) : "")
+    }
+  }, [query.data, open])
   const save = useMutation({
     mutationFn: () => {
       const body = {
@@ -126,14 +136,17 @@ export function AIAccountDialog({ id }: { id: string }) {
           ? { access_token: access, refresh_token: refresh, expires_at: Math.floor(expiryMillis / 1000) }
           : {}),
       }
-      setAccess("")
-      setRefresh("")
       return licenseAI.saveAccount(id, body)
     },
-    onSuccess: () => {
-      void query.refetch()
+    onSuccess: (metadata) => {
+      setAccess("")
+      setRefresh("")
+      dirty.current = false
+      qc.setQueryData(["ai-account", id], metadata)
     },
   })
+  const replacing = !!(access || refresh)
+  const incomplete = replacing && (!access || !refresh || !expiryValid)
   return (
     <>
       <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
@@ -146,38 +159,87 @@ export function AIAccountDialog({ id }: { id: string }) {
           if (!next) {
             setAccess("")
             setRefresh("")
+            setExpires("")
+            dirty.current = false
             save.reset()
           }
         }}
       >
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{t("ai.accountTitle")}</DialogTitle>
             <DialogDescription>{t("ai.accountDescription")}</DialogDescription>
           </DialogHeader>
           <p>
-            {t("ai.status")}：{query.data?.state ? stateLabel(query.data.state) : t("ai.unconfigured")}
+            {t("ai.status")}：
+            {query.isPending
+              ? t("ai.loading")
+              : query.isError
+                ? t("ai.readFailed")
+                : stateLabel(query.data?.state || "unconfigured")}
           </p>
+          {query.data?.configured && !query.isError && (
+            <div className="rounded-lg border bg-muted/40 p-3 text-sm space-y-1">
+              <p className="font-medium">{t("ai.configured")}</p>
+              {query.data.updated_at && (
+                <p>
+                  {t("common.updated")}:{" "}
+                  {new Date(query.data.updated_at).toLocaleString(locale === "zh" ? "zh-CN" : "en-US", {
+                    timeZone: timezone || "UTC",
+                  })}{" "}
+                  ({timezone || "UTC"})
+                </p>
+              )}
+            </div>
+          )}
           <Failure error={query.error} />
           <Failure error={save.error} />
           <form
             className="space-y-3"
             onSubmit={(e) => {
               e.preventDefault()
-              save.mutate()
+              if (!incomplete) save.mutate()
             }}
           >
             <Label className="flex gap-2">
-              <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={enabled}
+                disabled={save.isPending}
+                onChange={(e) => {
+                  dirty.current = true
+                  setEnabled(e.target.checked)
+                }}
+              />
               {t("ai.enableSync")}
             </Label>
             <Label className="grid gap-2">
               Access token
-              <Input type="password" autoComplete="off" value={access} onChange={(e) => setAccess(e.target.value)} />
+              <Input
+                type="password"
+                autoComplete="off"
+                disabled={save.isPending}
+                placeholder={query.data?.configured ? t("ai.tokensSaved") : undefined}
+                value={access}
+                onChange={(e) => {
+                  dirty.current = true
+                  setAccess(e.target.value)
+                }}
+              />
             </Label>
             <Label className="grid gap-2">
               Refresh token
-              <Input type="password" autoComplete="off" value={refresh} onChange={(e) => setRefresh(e.target.value)} />
+              <Input
+                type="password"
+                autoComplete="off"
+                disabled={save.isPending}
+                placeholder={query.data?.configured ? t("ai.tokensSaved") : undefined}
+                value={refresh}
+                onChange={(e) => {
+                  dirty.current = true
+                  setRefresh(e.target.value)
+                }}
+              />
             </Label>
             <Label className="grid gap-2">
               {t("ai.tokenExpiry")}
@@ -189,7 +251,11 @@ export function AIAccountDialog({ id }: { id: string }) {
                 placeholder="1794464309079"
                 required={!!(access || refresh)}
                 value={expires}
-                onChange={(e) => setExpires(e.target.value)}
+                disabled={save.isPending}
+                onChange={(e) => {
+                  dirty.current = true
+                  setExpires(e.target.value)
+                }}
               />
             </Label>
             {expiryPreview && (
@@ -197,14 +263,17 @@ export function AIAccountDialog({ id }: { id: string }) {
                 {expiryPreview} ({timezone || "UTC"})
               </p>
             )}
+            {replacing && (!access || !refresh) && (
+              <p role="alert" className="text-sm text-destructive">
+                {t("ai.tokensPair")}
+              </p>
+            )}
             {!!expires && !expiryValid && (
               <p role="alert" className="text-sm text-destructive">
                 {t("ai.expiryInvalid")}
               </p>
             )}
-            <Button
-              disabled={save.isPending || query.isPending || query.isError || (!!(access || refresh) && !expiryValid)}
-            >
+            <Button disabled={save.isPending || query.isPending || query.isError || incomplete}>
               {t("common.save")}
             </Button>
             {save.isSuccess && <p role="status">{t("ai.saved")}</p>}
@@ -217,6 +286,7 @@ export function AIAccountDialog({ id }: { id: string }) {
 
 export function AIPlanDialog({ id }: { id: string }) {
   const { t } = useI18n()
+  const qc = useQueryClient()
   const stateLabel = useAIState()
   const [dirty, setDirty] = useState(false)
   const [confirmSave, setConfirmSave] = useState(false)
@@ -275,6 +345,7 @@ export function AIPlanDialog({ id }: { id: string }) {
     onSuccess: () => {
       setDirty(false)
       setPreview(null)
+      void qc.invalidateQueries({ queryKey: ["admin", "plans"] })
       void query.refetch()
     },
   })
@@ -317,6 +388,7 @@ export function AIPlanDialog({ id }: { id: string }) {
                 setValue(v)
               }}
             />
+            <p className="text-sm text-muted-foreground">{t("ai.unlimitedNote")}</p>
             <Button disabled={save.isPending || query.isPending || query.isError}>{t("ai.saveSync")}</Button>
             {save.isSuccess && <p role="status">{t("ai.saved")}</p>}
           </form>
@@ -336,7 +408,7 @@ export function AIPlanDialog({ id }: { id: string }) {
               <p>
                 {t("ai.batchWarning", {
                   count: preview.items.filter((i) => i.eligible).length,
-                  quota: preview.config.quota,
+                  quota: preview.config.quota === 0 ? t("ai.unlimited") : preview.config.quota,
                 })}
               </p>
               <ul className="max-h-40 overflow-auto text-xs">
@@ -401,7 +473,7 @@ export function AIPlanDialog({ id }: { id: string }) {
 }
 
 export function LicenseAICard({ id }: { id: string }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const stateLabel = useAIState()
   const [dirty, setDirty] = useState(false)
   const provisionKey = useRef("")
@@ -504,13 +576,14 @@ export function LicenseAICard({ id }: { id: string }) {
               </div>
               <dl className="grid grid-cols-1 gap-x-6 gap-y-4 rounded-lg bg-muted/40 p-4 text-sm sm:grid-cols-2">
                 <div>
-                  <dt className="text-muted-foreground">Key ID</dt>
+                  <dt className="text-muted-foreground">{t("ai.keyId")}</dt>
                   <dd className="mt-1 font-medium">{binding.remote_id || "—"}</dd>
                 </div>
                 <div>
                   <dt className="text-muted-foreground">{t("ai.used")}</dt>
                   <dd className="mt-1 font-medium">
-                    {binding.remote.quota_used ?? "—"} / {binding.config.quota} USD
+                    {binding.remote.quota_used ?? "—"} USD /{" "}
+                    {binding.config.quota === 0 ? t("ai.unlimited") : `${binding.config.quota} USD`}
                   </dd>
                 </div>
                 <div className="sm:col-span-2">
@@ -522,7 +595,7 @@ export function LicenseAICard({ id }: { id: string }) {
               </dl>
               {binding.last_error && (
                 <p role="alert" className="text-destructive">
-                  {binding.last_error}
+                  {errorMessage({ code: binding.last_error_code }, locale)}
                 </p>
               )}
               <p className="text-sm text-muted-foreground">
@@ -571,7 +644,11 @@ export function LicenseAICard({ id }: { id: string }) {
                           </TableCell>
                           <TableCell>
                             {stateLabel(j.state)}
-                            {j.last_error && <p className="text-xs text-destructive">{j.last_error}</p>}
+                            {j.last_error && (
+                              <p className="text-xs text-destructive">
+                                {errorMessage({ code: j.last_error_code }, locale)}
+                              </p>
+                            )}
                           </TableCell>
                         </TableRow>
                       ))}

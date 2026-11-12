@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/tabloy/keygate/internal/model"
@@ -30,6 +29,13 @@ func (s *Store) AIPlan(ctx context.Context, id string) (*AIPlanRecord, error) {
 }
 
 func (s *Store) SaveAIPlan(ctx context.Context, id string, v *AIPlanRecord) error {
+	validate := v.Config
+	if !validate.Enabled && validate.GroupID == 0 {
+		validate.GroupID = 1
+	}
+	if err := validate.ValidateLimits(); err != nil {
+		return err
+	}
 	raw, err := json.Marshal(v.Config)
 	if err != nil {
 		return err
@@ -45,8 +51,13 @@ func (s *Store) SaveAIPlan(ctx context.Context, id string, v *AIPlanRecord) erro
 		if err := tx.NewRaw(`SELECT l.id FROM licenses l JOIN license_ai_bindings b ON b.license_id=l.id WHERE l.plan_id=? ORDER BY l.id FOR UPDATE OF l`, id).Scan(ctx, &ids); err != nil {
 			return err
 		}
-		if len(ids) > 0 && (v.Config.GroupID <= 0 || v.Config.Quota < 0.00000001 || math.IsNaN(v.Config.Quota) || math.IsInf(v.Config.Quota, 0) || v.ProfileBinding == "") {
-			return errors.New("enrolled licenses require valid AI limits and profile")
+		if len(ids) > 0 {
+			if err := v.Config.ValidateLimits(); err != nil {
+				return err
+			}
+			if v.ProfileBinding == "" {
+				return errors.New("enrolled licenses require valid AI limits and profile")
+			}
 		}
 		cfg := v.Config
 		cfg.Enabled = true
