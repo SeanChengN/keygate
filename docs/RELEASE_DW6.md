@@ -18,3 +18,15 @@
 ## 发布边界
 
 只构建 Keygate linux/amd64。VPS 升级使用精确 digest 和本地加密备份，不上传 OpenList。不修改生产方案及客户额度，不重新编译影造。
+
+## 发布及生产只读验收结果
+
+2026-11-12：源码提交 `73a6694001dfb655eee31e123cabc2db20ce45c0` 的 [Release 门禁](https://github.com/SeanChengN/keygate/actions/runs/43168257570)全部通过；[amd64 镜像构建](https://github.com/SeanChengN/digital-warehousing-control-plane/actions/runs/43168613760)成功。
+
+镜像：`ghcr.io/seanchengn/digital-wms-keygate:v0.1.4-dw.6@sha256:60f55308782c821a8a0534170d61a2887a003b05e919c666148b9e14efe64db7`。
+
+VPS 直接拉取被拒绝后，经用户明确授权，在本机导出并逐项校验原始 OCI 清单、压缩层和供应链证明，上传复核并预加载同一发布 digest。先完成 VPS 本地加密备份，再执行受保护升级；备份没有上传 OpenList，旧镜像与配置快照保留。
+
+容器版本、源码标签、平台、健康及 readiness 通过；非管理来源访问管理 UI/API 仍为 403。生产方案和非镜像设置的升级前后对比一致，吉吉账号保持就绪，测试方案保留原有 7 天宽限期。没有修改客户额度，也未调用付费模型。
+
+本地浏览器模拟最终共 9 项通过，额外覆盖网络、会话、未知错误翻译及延迟回读不覆盖未保存输入。真实管理员会话内的窗口操作与独立恢复演练未在本轮重新验收。
