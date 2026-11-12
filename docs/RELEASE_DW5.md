@@ -1,6 +1,6 @@
 # Keygate dw.5 寄售库存与删除修复
 
-计划版本 `v0.1.4-dw.5`；Movaura 本地审核候选 `2.7.0-beta.8`。版本发布及生产结果在验收完成后补记。
+已发布版本 `v0.1.4-dw.5`；Movaura 本地审核候选 `2.7.0-beta.8`。2026-11-12 完成 VPS 升级和专用测试库存实机验收。
 
 ## 删除异常证据与修复
 
@@ -29,3 +29,15 @@ Movaura 离线授权回归 44 项通过（包含 DPAPI 待激活重载）。完�
 见 [吉吉运营](JIJI_OPERATIONS.md) 和 [寄售库存](LICENSE_INVENTORY.md)。迁移 `20261113_license_inventory.up.sql` 为增量；不回填旧证。旧二进制不理解待激活状态，回退前须停新批次并处理在途任务；数据库与镜像共同按备份流程恢复，不执行破坏性 down。
 
 本轮部署仅 VPS 本地加密备份，不上传 OpenList。详细运维证据留仓库外受保护位置，项目文档只保留版本、digest 和脱敏结果。
+
+## 发布与实机结果
+
+- 发布提交 `5055d63931801d8b8eff27dbd78108445f41a860`；[源码门禁 43144823025](https://github.com/SeanChengN/keygate/actions/runs/43144823025) Backend、Frontend、Security 全通过，[源码 Release](https://github.com/SeanChengN/keygate/releases/tag/v0.1.4-dw.5) 已创建。
+- [镜像任务 43145293122](https://github.com/SeanChengN/digital-warehousing-control-plane/actions/runs/43145293122) 成功，仅构建 linux/amd64，保留 SBOM/provenance。镜像为 `ghcr.io/seanchengn/digital-wms-keygate:v0.1.4-dw.5@sha256:52c4726631141527c90492637e8a879e2b0c5a6dc036d04814b3eaf8a2dcfb14`。
+- 核对 OCI index、全部 blob 哈希、平台和源码 revision 后预加载 VPS；本地加密备份完成后用既有脚本升级，全部业务服务正常，readiness 通过，公网管理 API 仍 403。备份、旧镜像、环境快照留 VPS，没有上传 OpenList。
+- 新建两张测试库存，初始无订阅期限、远端 ID 为零、无任务。TXT 一行一张、两行、无 BOM，完整值只在内存与匿名进程管道中；没有保存测试明文文件。
+- 两张库存首次设备证明分别开始周期，各生成一把吉吉 Key；等待响应没有 token，完成后独立客户端验签并验证绑定设备成功。历史 TXT 在激活后重下，字节哈希一致。模型调用为零。
+- 两张测试许可证均撤销、等待远端禁用读回完成，然后 DELETE 204；带 AI 配置的空测试方案 DELETE 204。数据库独立确认许可证、绑定、任务和方案 AI 配置均已清理，两个删除审计与库存／导出清单保留。
+- 正式方案原配置和版本未变化，账号同步恢复验收前关闭状态；用户原有两张失败测试方案保留，供管理员自行复查删除。
+- 验收助手曾遇到测试方案零宽限期创建默认值、PowerShell null 数组计数及 hex 公钥解析差异；均在同一测试批次内据证据修正助手，没有重复批量创建或付费调用。
+- beta8 本地安装包保护构建、编译运行验证与 6437 个解包文件比对通过；安装／升级、干净 Windows、发布者签名及人工使用仍属待完成门禁，安装由用户操作。
