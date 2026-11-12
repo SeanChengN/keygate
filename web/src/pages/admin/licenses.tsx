@@ -3,6 +3,7 @@ import { Ban, Check, Copy, Eye, Package, Pause, Pencil, Play, Plus, RefreshCw, S
 import { useEffect, useState } from "react"
 import { Link, useSearchParams } from "react-router-dom"
 import { LicenseAICard } from "@/components/license-ai"
+import { InventoryManager } from "@/components/license-inventory"
 import { showToast } from "@/components/toast"
 import {
   AlertDialog,
@@ -69,6 +70,7 @@ export default function LicensesPage() {
   const [customerFilter, setCustomerFilter] = useState<string>("")
   const [search, setSearch] = useState("")
   const [page, setPage] = useState(0)
+  const [selected, setSelected] = useState<string[]>([])
   const limit = 20
 
   const { data: productsData } = useQuery({ queryKey: ["admin", "products"], queryFn: () => admin.listProducts() })
@@ -144,9 +146,12 @@ export default function LicensesPage() {
             {total} {t("licenses.title").toLowerCase()} total
           </p>
         </div>
-        <Button onClick={() => setCreating(true)}>
-          <Plus className="h-4 w-4 mr-2" /> {t("licenses.issue")}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <InventoryManager selected={selected} clear={() => setSelected([])} />
+          <Button onClick={() => setCreating(true)}>
+            <Plus className="h-4 w-4 mr-2" /> {t("licenses.issue")}
+          </Button>
+        </div>
       </div>
 
       <div className="flex items-center gap-4">
@@ -213,7 +218,16 @@ export default function LicensesPage() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t("filter.allStatuses")}</SelectItem>
-            {["active", "trialing", "past_due", "canceled", "expired", "suspended", "revoked"].map((s) => (
+            {[
+              "pending_activation",
+              "active",
+              "trialing",
+              "past_due",
+              "canceled",
+              "expired",
+              "suspended",
+              "revoked",
+            ].map((s) => (
               <SelectItem key={s} value={s}>
                 {t(`status.${s}` as any)}
               </SelectItem>
@@ -231,6 +245,43 @@ export default function LicensesPage() {
               <DataTable>
                 <DataTableHeader>
                   <DataTableRow>
+                    <DataTableHead>
+                      <input
+                        type="checkbox"
+                        aria-label={t("inventory.selection")}
+                        checked={
+                          licenses.some(
+                            (lic) =>
+                              lic.issuance_batch_id && lic.status === "pending_activation" && !lic.first_export_id,
+                          ) &&
+                          licenses
+                            .filter(
+                              (lic) =>
+                                lic.issuance_batch_id && lic.status === "pending_activation" && !lic.first_export_id,
+                            )
+                            .every((lic) => selected.includes(lic.id))
+                        }
+                        onChange={(event) =>
+                          setSelected(
+                            event.target.checked
+                              ? [
+                                  ...new Set([
+                                    ...selected,
+                                    ...licenses
+                                      .filter(
+                                        (lic) =>
+                                          lic.issuance_batch_id &&
+                                          lic.status === "pending_activation" &&
+                                          !lic.first_export_id,
+                                      )
+                                      .map((lic) => lic.id),
+                                  ]),
+                                ].slice(0, 500)
+                              : selected.filter((id) => !licenses.some((lic) => lic.id === id)),
+                          )
+                        }
+                      />
+                    </DataTableHead>
                     <DataTableHead>{t("common.email")}</DataTableHead>
                     <DataTableHead>{t("customers.customer")}</DataTableHead>
                     <DataTableHead>{t("licenses.licenseKey")}</DataTableHead>
@@ -243,9 +294,27 @@ export default function LicensesPage() {
                   </DataTableRow>
                 </DataTableHeader>
                 <DataTableBody>
-                  {licenses.length === 0 && <DataTableEmpty colSpan={9} message={t("licenses.empty")} />}
+                  {licenses.length === 0 && <DataTableEmpty colSpan={10} message={t("licenses.empty")} />}
                   {licenses.map((lic) => (
                     <DataTableRow key={lic.id}>
+                      <DataTableCell>
+                        <input
+                          type="checkbox"
+                          aria-label={`${t("inventory.selection")} ${lic.id}`}
+                          checked={selected.includes(lic.id)}
+                          disabled={
+                            !lic.issuance_batch_id ||
+                            lic.status !== "pending_activation" ||
+                            !!lic.first_export_id ||
+                            (!selected.includes(lic.id) && selected.length >= 500)
+                          }
+                          onChange={(event) =>
+                            setSelected(
+                              event.target.checked ? [...selected, lic.id] : selected.filter((id) => id !== lic.id),
+                            )
+                          }
+                        />
+                      </DataTableCell>
                       <DataTableCell className="font-medium">{lic.email}</DataTableCell>
                       <DataTableCell className="text-muted-foreground">
                         {lic.customer?.name || t("customers.unassigned")}
@@ -261,7 +330,11 @@ export default function LicensesPage() {
                         <Badge className={statusColor(lic.status)}>{t(`status.${lic.status}` as any)}</Badge>
                       </DataTableCell>
                       <DataTableCell className="text-muted-foreground text-xs">
-                        {lic.valid_until ? formatDate(lic.valid_until) : t("licenses.perpetual")}
+                        {lic.status === "pending_activation"
+                          ? t("inventory.unstarted")
+                          : lic.valid_until
+                            ? formatDate(lic.valid_until)
+                            : t("licenses.perpetual")}
                       </DataTableCell>
                       <DataTableCell className="text-muted-foreground text-xs">
                         {formatDate(lic.created_at)}
@@ -610,7 +683,27 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
     },
   })
   const deleteMut = useMutation({
-    mutationFn: () => admin.deleteLicense(id),
+    mutationFn: async () => {
+      try {
+        await admin.deleteLicense(id)
+      } catch (failure) {
+        const result = failure as Error & { status?: number; code?: string }
+        if (
+          result.status &&
+          result.status < 500 &&
+          result.status !== 404 &&
+          result.code !== "DELETE_RESULT_UNCONFIRMED"
+        )
+          throw failure
+        // Read after an ambiguous delete; a confirmed absent record is success.
+        try {
+          await admin.getLicense(id)
+        } catch (readFailure) {
+          if ((readFailure as Error & { status?: number }).status === 404) return
+        }
+        throw failure
+      }
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "licenses"] })
       qc.invalidateQueries({ queryKey: ["admin", "customer"] })

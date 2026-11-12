@@ -897,6 +897,12 @@ func main() {
 		// Permanent license deletion is intentionally admin-only. A merchant
 		// provisioning key with licenses:write may revoke, but cannot erase
 		// license, billing, usage, or audit-linked history.
+		admin.POST("/licenses/batches", adminH.CreateInventoryBatch)
+		admin.GET("/licenses/batches", adminH.ListInventoryBatches)
+		admin.GET("/licenses/batches/:id", adminH.GetInventoryBatch)
+		admin.POST("/licenses/key-exports", adminH.CreateKeyExport)
+		admin.GET("/licenses/key-exports", adminH.ListKeyExports)
+		admin.GET("/licenses/key-exports/:id/download", adminH.DownloadKeyExport)
 		admin.GET("/licenses/:id/key", adminH.RevealLicenseKey)
 		admin.DELETE("/licenses/:id", adminH.DeleteLicense)
 

@@ -47,7 +47,7 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
       (typeof json?.error === "string" ? json.error : null) ||
       (raw && raw.length < 200 ? raw : null) ||
       `Request failed (${res.status}${res.statusText ? ` ${res.statusText}` : ""})`
-    throw new Error(msg)
+    throw Object.assign(new Error(msg), { status: res.status, code: json?.error?.code })
   }
   return (json?.data !== undefined ? json.data : json) as T
 }
@@ -95,6 +95,43 @@ export type LicenseAI = {
     remote: Record<string, string | number>
   }
   jobs?: { id: string; action: string; state: string; phase: string; last_error: string }[]
+}
+export type InventoryBatch = { id: string; product_id: string; plan_id: string; quantity: number; created_at: string }
+export type InventoryItem = { id: string; status: string; first_export_id?: string }
+export type LicenseExport = { id: string; license_ids: string[]; created_at: string }
+export const inventory = {
+  create: (body: { product_id: string; plan_id: string; quantity: number; notes: string }, key: string) =>
+    request<InventoryBatch>("/admin/licenses/batches", {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify(body),
+    }),
+  batches: () => get<{ batches: InventoryBatch[] }>("/admin/licenses/batches"),
+  batch: (id: string) => get<{ batch: InventoryBatch; licenses: InventoryItem[] }>(`/admin/licenses/batches/${id}`),
+  exportKeys: (ids: string[], key: string) =>
+    request<LicenseExport>("/admin/licenses/key-exports", {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify({ license_ids: ids }),
+    }),
+  exports: () => get<{ exports: LicenseExport[] }>("/admin/licenses/key-exports"),
+  download: async (id: string) => {
+    const response = await fetch(`${BASE}/admin/licenses/key-exports/${encodeURIComponent(id)}/download`, {
+      credentials: "include",
+      cache: "no-store",
+    })
+    if (!response.ok) {
+      const value = await response.json().catch(() => null)
+      throw new Error(value?.error?.message || `Download failed (${response.status})`)
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `keygate-licenses-${id}.txt`
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  },
 }
 export const licenseAI = {
   account: (id: string) =>
@@ -645,6 +682,8 @@ export interface Entitlement {
 }
 
 export interface License {
+  issuance_batch_id?: string
+  first_export_id?: string
   id: string
   product_id: string
   plan_id: string

@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { useSiteConfig } from "@/hooks/use-site-config"
 import { useI18n } from "@/i18n"
 import type en from "@/i18n/locales/en"
 
@@ -36,6 +37,7 @@ const labels = {
 }
 const states: Record<string, string> = {
   pending: "ai.pending",
+  waiting_activation: "ai.waiting_activation",
   running: "ai.pending",
   synced: "ai.synced",
   done: "ai.done",
@@ -90,12 +92,23 @@ function Failure({ error }: { error: Error | null }) {
 
 export function AIAccountDialog({ id }: { id: string }) {
   const { t } = useI18n()
+  const { timezone } = useSiteConfig()
   const stateLabel = useAIState()
   const [open, setOpen] = useState(false),
     [enabled, setEnabled] = useState(false)
   const [access, setAccess] = useState(""),
     [refresh, setRefresh] = useState(""),
     [expires, setExpires] = useState("")
+  const expiryMillis = /^\d{13}$/.test(expires.trim()) ? Number(expires.trim()) : NaN
+  const expiryValid =
+    Number.isSafeInteger(expiryMillis) && Math.floor(expiryMillis / 1000) > Math.floor(Date.now() / 1000)
+  const expiryPreview = Number.isFinite(expiryMillis)
+    ? new Intl.DateTimeFormat(undefined, {
+        timeZone: timezone || "UTC",
+        dateStyle: "medium",
+        timeStyle: "medium",
+      }).format(new Date(expiryMillis))
+    : ""
   const query = useQuery({
     queryKey: ["ai-account", id],
     queryFn: () => licenseAI.account(id),
@@ -110,7 +123,7 @@ export function AIAccountDialog({ id }: { id: string }) {
       const body = {
         enabled,
         ...(access || refresh
-          ? { access_token: access, refresh_token: refresh, expires_at: Math.floor(new Date(expires).getTime() / 1000) }
+          ? { access_token: access, refresh_token: refresh, expires_at: Math.floor(expiryMillis / 1000) }
           : {}),
       }
       setAccess("")
@@ -169,13 +182,31 @@ export function AIAccountDialog({ id }: { id: string }) {
             <Label className="grid gap-2">
               {t("ai.tokenExpiry")}
               <Input
-                type="datetime-local"
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]{13}"
+                maxLength={13}
+                placeholder="1794464309079"
                 required={!!(access || refresh)}
                 value={expires}
                 onChange={(e) => setExpires(e.target.value)}
               />
             </Label>
-            <Button disabled={save.isPending || query.isPending || query.isError}>{t("common.save")}</Button>
+            {expiryPreview && (
+              <p className="text-sm text-muted-foreground">
+                {expiryPreview} ({timezone || "UTC"})
+              </p>
+            )}
+            {!!expires && !expiryValid && (
+              <p role="alert" className="text-sm text-destructive">
+                {t("ai.expiryInvalid")}
+              </p>
+            )}
+            <Button
+              disabled={save.isPending || query.isPending || query.isError || (!!(access || refresh) && !expiryValid)}
+            >
+              {t("common.save")}
+            </Button>
             {save.isSuccess && <p role="status">{t("ai.saved")}</p>}
           </form>
         </DialogContent>

@@ -72,6 +72,7 @@ export default function PlansPage() {
   })
   const deleteMut = useMutation({
     mutationFn: (id: string) => admin.deletePlan(id),
+    onError: (error: Error) => showToast(error.message, "error"),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "plans"] })
       setDeleting(null)

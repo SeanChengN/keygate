@@ -80,3 +80,7 @@ Go 定向测试：`go test ./internal/service ./internal/handler ./internal/stor
 ## v0.1.4-dw.4 运营入口
 
 令牌、分组 ID 的获取步骤，方案统一同步、旧证单张／批量补配、安全删除及迁移回滚见 [吉吉运营操作指南](JIJI_OPERATIONS.md)。增量迁移 `20261112_ai_management.up.sql` 添加方案版本、绑定来源及持久补配批次；新签发开关不等于停用既有 Key。
+
+## 寄售库存
+
+`v0.1.4-dw.5` 新增管理员批量库存，首次激活才开始订阅并创建专属 Key；未激活绑定状态为 `waiting_activation`，配置保存会更新目标值但不排队远端创建。详见 [寄售库存运营](LICENSE_INVENTORY.md)。

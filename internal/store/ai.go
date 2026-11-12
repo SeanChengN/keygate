@@ -55,11 +55,17 @@ func (s *Store) SaveAIPlan(ctx context.Context, id string, v *AIPlanRecord) erro
 			return err
 		}
 		for _, licenseID := range ids {
-			if _, err := tx.ExecContext(ctx, `UPDATE license_ai_bindings SET config=?::jsonb, profile_binding=?, plan_revision=?, state=CASE WHEN state='uncertain' THEN state ELSE 'pending' END, updated_at=now() WHERE license_id=?`, string(boundRaw), v.ProfileBinding, v.Revision, licenseID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE license_ai_bindings SET config=?::jsonb, profile_binding=?, plan_revision=?, state=CASE WHEN (SELECT status FROM licenses WHERE id=license_id)='pending_activation' THEN 'waiting_activation' WHEN state='uncertain' THEN state ELSE 'pending' END, updated_at=now() WHERE license_id=?`, string(boundRaw), v.ProfileBinding, v.Revision, licenseID); err != nil {
 				return err
 			}
-			if err := EnqueueAI(ctx, tx, licenseID, "sync", fmt.Sprintf("plan:%d", v.Revision)); err != nil {
+			var status string
+			if err := tx.NewSelect().Table("licenses").Column("status").Where("id=?", licenseID).Scan(ctx, &status); err != nil {
 				return err
+			}
+			if status != model.StatusPendingActivation {
+				if err := EnqueueAI(ctx, tx, licenseID, "sync", fmt.Sprintf("plan:%d", v.Revision)); err != nil {
+					return err
+				}
 			}
 		}
 		v.Affected = len(ids)

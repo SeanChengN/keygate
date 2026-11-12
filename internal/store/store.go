@@ -24,7 +24,8 @@ import (
 )
 
 type Store struct {
-	DB *bun.DB
+	DB  *bun.DB
+	dsn string
 	// LicenseKeyAEAD is optional: when set, license keys are AES-GCM
 	// encrypted at rest in license_key_encrypted alongside the plaintext
 	// column. Reads prefer the encrypted column with fallback to plaintext.
@@ -44,7 +45,7 @@ func New(dsn string) (*Store, error) {
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("ping: %w", err)
 	}
-	return &Store{DB: db}, nil
+	return &Store{DB: db, dsn: dsn}, nil
 }
 
 func (s *Store) Close() error { return s.DB.Close() }
@@ -517,6 +518,9 @@ func (s *Store) CreateLicense(ctx context.Context, l *model.License) error {
 		return err
 	}
 	return s.DB.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := LockAIPlan(ctx, tx, l.PlanID); err != nil {
+			return err
+		}
 		if _, err := tx.NewInsert().Model(l).Exec(ctx); err != nil {
 			return err
 		}
@@ -536,6 +540,9 @@ func (s *Store) CreateLicenseWithSubscription(ctx context.Context, l *model.Lice
 		return err
 	}
 	defer tx.Rollback()
+	if err := LockAIPlan(ctx, tx, l.PlanID); err != nil {
+		return err
+	}
 
 	if _, err := tx.NewInsert().Model(l).Exec(ctx); err != nil {
 		return err

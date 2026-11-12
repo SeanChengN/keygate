@@ -111,6 +111,16 @@ func (s *LicenseService) Activate(ctx context.Context, in ActivateInput) (*Activ
 		return nil, err
 	}
 
+	if lic.IssuanceBatchID != "" && lic.Status == model.StatusPendingActivation {
+		if err := validateDeviceProof(ctx, s.store, in.DeviceProof, "activate", in.LicenseKey, in.Identifier, lic.ProductID, "", "", "", ""); err != nil {
+			return nil, err
+		}
+		act := &model.Activation{LicenseID: lic.ID, Identifier: in.Identifier, IdentifierType: in.IdentifierType, Label: in.Label, IPAddress: in.IPAddress, DevicePublicKey: in.DeviceProof.PublicKey}
+		if _, err := s.store.StartInventory(ctx, lic.ID, act); err != nil {
+			return nil, apperr.Conflict("ACTIVATION_LIMIT", "此库存已被其他设备激活或状态已改变")
+		}
+		return &ActivateResult{Status: "activation_pending", LicenseID: lic.ID, Meta: map[string]any{"retry_after": 3}}, nil
+	}
 	if err := s.assertUsable(lic); err != nil {
 		return nil, err
 	}
@@ -127,6 +137,15 @@ func (s *LicenseService) Activate(ctx context.Context, in ActivateInput) (*Activ
 		} else if in.DeviceProof.provided() {
 			return nil, apperr.Conflict("DEVICE_REENROLL_REQUIRED",
 				"legacy activation must be removed or approved before binding a device key")
+		}
+		if lic.IssuanceBatchID != "" {
+			pending, err := s.inventoryPending(ctx, lic)
+			if err != nil {
+				return nil, err
+			}
+			if pending {
+				return &ActivateResult{Status: "activation_pending", LicenseID: lic.ID, Meta: map[string]any{"retry_after": 3}}, nil
+			}
 		}
 		_ = s.store.TouchActivation(ctx, existing.ID)
 		middleware.LicenseActivations.WithLabelValues(lic.ProductID, "already_activated").Inc()
@@ -294,6 +313,15 @@ func (s *LicenseService) Verify(ctx context.Context, in VerifyInput) (*VerifyRes
 	if err := validateDeviceProof(ctx, s.store, in.DeviceProof, "verify", in.LicenseKey,
 		in.Identifier, lic.ProductID, "", "", "", act.DevicePublicKey); err != nil {
 		return nil, err
+	}
+	if lic.IssuanceBatchID != "" {
+		pending, err := s.inventoryPending(ctx, lic)
+		if err != nil {
+			return nil, err
+		}
+		if pending {
+			return nil, apperr.Conflict("ACTIVATION_PENDING", "AI 服务准备中")
+		}
 	}
 	_ = s.store.TouchActivation(ctx, act.ID)
 
@@ -640,4 +668,25 @@ func (s *LicenseService) signTokenAt(lic *model.License, identifier string, now 
 		t.ValidUntil = &validUntil
 	}
 	return license.Sign(t, s.signingKey)
+}
+
+func (s *LicenseService) inventoryPending(ctx context.Context, l *model.License) (bool, error) {
+	b, err := s.store.AIBinding(ctx, l.ID)
+	if err != nil {
+		return false, apperr.Internal(err)
+	}
+	if b.State == "failed" || b.State == "uncertain" {
+		return false, apperr.Conflict("AI_PREPARATION_FAILED", "AI 服务准备失败，请联系管理员")
+	}
+	if b.State != "synced" || b.RemoteID == 0 || len(b.Secret) == 0 || b.RemoteView["status"] != "active" {
+		return true, nil
+	}
+	if s.AI == nil {
+		return false, apperr.Conflict("AI_PREPARATION_FAILED", "AI 服务未配置")
+	}
+	credential, err := s.AI.Credential(ctx, l)
+	if err != nil || credential == nil {
+		return false, apperr.Conflict("AI_PREPARATION_FAILED", "AI 服务配置不一致，请联系管理员")
+	}
+	return false, nil
 }

@@ -1,6 +1,6 @@
 # 吉吉账号与许可证 AI 运营
 
-适用于 Keygate `v0.1.4-dw.4` 与影造 beta7。管理令牌只交给 Keygate 服务器；客户只输入软件许可证。界面使用“吉吉”，协议中的 `provider_id=jiji` 和服务域名保持不变。
+适用于 Keygate 许可证 AI 扩展；`v0.1.4-dw.5` 增加毫秒输入和寄售库存，库存首次激活请使用影造 beta8。旧许可证继续兼容 beta7。管理令牌只交给 Keygate 服务器；客户只输入软件许可证。界面使用“吉吉”，协议中的 `provider_id=jiji` 和服务域名保持不变。
 
 ## 1. 获取 Access token、Refresh token 与到期时间
 
@@ -15,15 +15,10 @@
 | `token_expires_at` | Access token 到期时刻 | Unix 毫秒时间戳 |
 
 4. 仅把两个令牌直接粘贴到 **产品 → 吉吉账号** 对应密码框中，不写入文本文件、截图、聊天、工单、终端命令或日志。
-5. 到期时间应填写本机时区的日期和时间。可在 DevTools Console 运行以下只显示到期时间的代码；它不显示令牌：
+5. 在到期时间框直接粘贴 F12 中的 **13 位毫秒数字**，例如 `1794464309079`。下方显示 Keygate 配置时区对应的年月日、时分秒，供核对。示例不代表当前有效时间。
+6. 开启后台同步并保存。界面拒绝秒级数字、非法值及已过期时间。令牌输入框清空，只显示配置状态；不重新录入令牌时留空会保留服务器密文。
 
-```javascript
-new Date(Number(localStorage.getItem('token_expires_at'))).toLocaleString()
-```
-
-6. 开启后台同步并保存。界面应清空令牌输入框，只显示是否配置及状态，不返回已保存令牌。留空保存会保留服务器密文。
-
-服务器接口 `expires_at` 使用 **Unix 秒**，浏览器的 `token_expires_at` 使用 **毫秒**；手工调用管理接口时应除以 1000，不能直接提交毫秒值。后台界面自行转换，无需手算。
+管理 API 的 `expires_at` 仍使用 Unix **秒**。界面负责把毫秒除以 1000 向下取整；仅在自行调用 API 时换算，不能直接提交 F12 的毫秒数字。
 
 服务器会串行续期并加密保存新 Access/Refresh token。浏览器和服务器共用一组 Refresh token 时，任何一方的续期都可能轮换该凭据；导入后避免让同一网页会话长期并发续期。重新登录或网页换取新令牌后，必要时成组重新录入服务器。出现认证异常／attention 时先核对账号并重新录入，再重试受阻任务；不反复点击或冷却探测。旧 Refresh token、截图中的令牌和备份中的过期令牌不应重新使用。
 
@@ -73,3 +68,5 @@ new Date(Number(localStorage.getItem('token_expires_at'))).toLocaleString()
 | `GET /plans/{id}/ai/provision-batches/{batch}` | 持久批次与当前进度 |
 
 增量迁移增加方案版本、绑定来源和批次表，不自动创建客户 Key。回滚前关闭新签发和账号同步，确认在途任务；保留新增表和迁移记录，不运行破坏性 down migration。旧二进制不具备手动补配邮件抑制等新规则，不能带着新任务直接回退运行。
+
+寄售库存批次、TXT 导出及首次激活规则见 [寄售库存运营](LICENSE_INVENTORY.md)。

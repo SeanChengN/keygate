@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tabloy/keygate/internal/model"
+	"github.com/uptrace/bun"
 )
 
 var (
@@ -96,9 +97,35 @@ func (s *Store) UpdatePlan(ctx context.Context, p *model.Plan) error {
 	return err
 }
 
+var ErrPlanHasLicenses = errors.New("plan has existing licenses")
+var ErrPlanHasSubscriptions = errors.New("plan has existing subscriptions")
+
 func (s *Store) DeletePlan(ctx context.Context, id string) error {
-	_, err := s.DB.NewDelete().Model((*model.Plan)(nil)).Where("id = ?", id).Exec(ctx)
-	return err
+	return s.DB.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := LockAIPlan(ctx, tx, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "SELECT id FROM plans WHERE id=? FOR UPDATE", id); err != nil {
+			return err
+		}
+		for _, ref := range []struct {
+			table   string
+			failure error
+		}{{"licenses", ErrPlanHasLicenses}, {"subscriptions", ErrPlanHasSubscriptions}} {
+			exists, err := tx.NewSelect().Table(ref.table).Where("plan_id=?", id).Exists(ctx)
+			if err != nil {
+				return err
+			}
+			if exists {
+				return ref.failure
+			}
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM ai_plan_settings WHERE plan_id=?", id); err != nil {
+			return err
+		}
+		_, err := tx.NewDelete().Model((*model.Plan)(nil)).Where("id = ?", id).Exec(ctx)
+		return err
+	})
 }
 
 // CountPlansIncompatibleWithType counts plans under the given product
@@ -270,7 +297,14 @@ func (s *Store) DeleteRevokedUnpaidLicense(ctx context.Context, id, actorID, ipA
 		return nil, err
 	}
 	defer tx.Rollback() //nolint:errcheck
-	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", "ai-license:"+id); err != nil {
+	var locked bool
+	if err := tx.NewRaw("SELECT pg_try_advisory_xact_lock(hashtextextended(?,0))", "ai-license:"+id).Scan(ctx, &locked); err != nil {
+		return nil, err
+	}
+	if !locked {
+		return nil, ErrAIDeleteBusy
+	}
+	if _, err := tx.ExecContext(ctx, "SET LOCAL lock_timeout='1s'"); err != nil {
 		return nil, err
 	}
 
@@ -334,7 +368,10 @@ func (s *Store) DeleteRevokedUnpaidLicense(ctx context.Context, id, actorID, ipA
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		if s.confirmLicenseDeletion(id, audit.ID) {
+			return deleted, nil
+		}
+		return nil, ErrDeleteUnconfirmed
 	}
 	return deleted, nil
 }
@@ -357,7 +394,7 @@ func (s *Store) SuspendLicense(ctx context.Context, id string) error {
 
 func (s *Store) ReinstateLicense(ctx context.Context, id string) error {
 	res, err := s.DB.NewUpdate().Model((*model.License)(nil)).
-		Set("status = ?, suspended_at = NULL, canceled_at = NULL, updated_at = ?", model.StatusActive, time.Now()).
+		Set("status = CASE WHEN issuance_batch_id <> '' AND valid_until IS NULL THEN 'pending_activation' ELSE 'active' END, suspended_at = NULL, canceled_at = NULL, updated_at = ?", time.Now()).
 		Where("id = ?", id).
 		Where("status IN ('suspended', 'expired', 'canceled')").
 		Exec(ctx)

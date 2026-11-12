@@ -22,6 +22,7 @@ import (
 	"github.com/tabloy/keygate/internal/store"
 	"github.com/tabloy/keygate/pkg/apperr"
 	"github.com/tabloy/keygate/pkg/response"
+	"github.com/uptrace/bun/driver/pgdriver"
 )
 
 type AdminHandler struct {
@@ -517,13 +518,16 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 
 func (h *AdminHandler) DeletePlan(c *gin.Context) {
 	id := c.Param("id")
-	count, _ := h.Store.PlanLicenseCount(c, id)
-	if count > 0 {
-		response.Err(c, http.StatusConflict, "HAS_LICENSES", "cannot delete plan with existing licenses")
-		return
-	}
 	if err := h.Store.DeletePlan(c, id); err != nil {
-		response.Internal(c)
+		switch {
+		case errors.Is(err, store.ErrPlanHasLicenses):
+			response.Err(c, 409, "HAS_LICENSES", "请先处理此方案下的许可证，包括已撤销记录")
+		case errors.Is(err, store.ErrPlanHasSubscriptions):
+			response.Err(c, 409, "HAS_SUBSCRIPTIONS", "方案仍有关联订阅，无法删除")
+		default:
+			slog.Error("plan deletion failed", "plan_id", id, "error", err)
+			response.Internal(c)
+		}
 		return
 	}
 	response.NoContent(c)
@@ -1153,6 +1157,10 @@ func (h *AdminHandler) RevokeLicense(c *gin.Context) {
 
 func (h *AdminHandler) DeleteLicense(c *gin.Context) {
 	_, err := h.Store.DeleteRevokedUnpaidLicense(c, c.Param("id"), adminID(c), c.ClientIP())
+	var databaseError pgdriver.Error
+	if errors.As(err, &databaseError) && databaseError.Field('C') == "55P03" {
+		err = store.ErrAIDeleteBusy
+	}
 	switch {
 	case err == nil:
 		response.NoContent(c)
@@ -1162,6 +1170,10 @@ func (h *AdminHandler) DeleteLicense(c *gin.Context) {
 		response.Err(c, http.StatusConflict, "LICENSE_NOT_REVOKED", "license must be revoked before deletion")
 	case errors.Is(err, store.ErrLicensePaymentLinked):
 		response.Err(c, http.StatusConflict, "LICENSE_PAYMENT_LINKED", "licenses linked to a payment provider cannot be deleted")
+	case errors.Is(err, store.ErrAIDeleteBusy):
+		response.Err(c, 409, "AI_DELETE_BUSY", "AI 服务正在同步，请等待同步完成后再删除")
+	case errors.Is(err, store.ErrDeleteUnconfirmed):
+		response.Err(c, 409, "DELETE_RESULT_UNCONFIRMED", "删除结果暂时无法确认，请刷新列表核对，勿重复操作")
 	case errors.Is(err, store.ErrAIDeleteUnconfirmed):
 		response.Err(c, http.StatusConflict, "AI_DELETE_UNCONFIRMED", "请先确认 AI Key 已禁用并处理未完成或结果不明的同步任务，再删除许可证")
 	default:
@@ -1248,6 +1260,13 @@ func (h *AdminHandler) SuspendLicense(c *gin.Context) {
 
 func (h *AdminHandler) RenewLicense(c *gin.Context) {
 	id := c.Param("id")
+	if l, err := h.Store.FindLicenseByID(c, id); err == nil && l.IssuanceBatchID != "" && l.ValidUntil == nil {
+		if !requireKeyProductScope(c, l.ProductID) {
+			return
+		}
+		response.Err(c, 409, "INVENTORY_NOT_ACTIVATED", "寄售库存首次激活前不能调整期限、续费或更换方案")
+		return
+	}
 	if strings.TrimSpace(c.GetHeader("Idempotency-Key")) == "" {
 		response.Err(c, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key is required")
 		return
@@ -1313,6 +1332,13 @@ func (h *AdminHandler) ReinstateLicense(c *gin.Context) {
 // accidental date edit can't silently re-arm a revoked customer).
 func (h *AdminHandler) SetLicenseValidUntil(c *gin.Context) {
 	id := c.Param("id")
+	if l, err := h.Store.FindLicenseByID(c, id); err == nil && l.IssuanceBatchID != "" && l.ValidUntil == nil {
+		if !requireKeyProductScope(c, l.ProductID) {
+			return
+		}
+		response.Err(c, 409, "INVENTORY_NOT_ACTIVATED", "寄售库存首次激活前不能调整期限、续费或更换方案")
+		return
+	}
 	if !h.checkLicenseScope(c, id) {
 		return
 	}
@@ -1955,6 +1981,13 @@ func (h *AdminHandler) ListFloatingSessions(c *gin.Context) {
 
 func (h *AdminHandler) ChangeLicensePlan(c *gin.Context) {
 	id := c.Param("id")
+	if l, err := h.Store.FindLicenseByID(c, id); err == nil && l.IssuanceBatchID != "" && l.ValidUntil == nil {
+		if !requireKeyProductScope(c, l.ProductID) {
+			return
+		}
+		response.Err(c, 409, "INVENTORY_NOT_ACTIVATED", "寄售库存首次激活前不能调整期限、续费或更换方案")
+		return
+	}
 	var req struct {
 		PlanID string `json:"plan_id" binding:"required"`
 	}

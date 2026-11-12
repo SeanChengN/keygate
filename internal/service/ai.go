@@ -269,7 +269,7 @@ func (s *AIService) Tick(ctx context.Context) {
 	}
 	var jobs []*model.AIJob
 	if s.Store.DB.NewRaw(`SELECT j.* FROM license_ai_jobs j JOIN licenses l ON l.id = j.license_id
-        WHERE j.state IN ('pending','running') AND j.next_attempt_at <= now()
+        WHERE l.status <> 'pending_activation' AND j.state IN ('pending','running') AND j.next_attempt_at <= now()
         AND (l.status IN ('revoked','suspended','expired') OR l.valid_until <= now() OR NOT EXISTS (
             SELECT 1 FROM license_ai_jobs blocker WHERE blocker.license_id = j.license_id AND blocker.id <> j.id
             AND (blocker.state = 'uncertain' OR blocker.state = 'failed' AND (blocker.action <> 'sync' OR blocker.phase NOT IN ('','published')))
@@ -343,6 +343,10 @@ func (s *AIService) process(ctx context.Context, job *model.AIJob) {
 			b.LastError = msg
 			_, _ = s.Store.DB.NewUpdate().Model(b).Column("state", "last_error", "remote_view", "updated_at").WherePK().Exec(ctx)
 		}
+		if !aiUsable(lic, time.Now()) && b.RemoteID == 0 && b.CandidateID == 0 && job.Phase == "" {
+			finish("done", nil)
+			return nil
+		}
 		tokens, err := s.Account(ctx, b.ProductID)
 		if err != nil {
 			finish("failed", err)
@@ -396,7 +400,7 @@ func (s *AIService) checkpoint(ctx context.Context, b *model.AIBinding, j *model
 					return err
 				}
 			}
-			if b.Revision == 1 && b.Origin != "manual" && s.Email != nil && s.Email.IsConfigured() {
+			if b.Revision == 1 && b.Origin == "issuance" && s.Email != nil && s.Email.IsConfigured() {
 				lic, err := s.Store.FindLicenseByID(ctx, b.LicenseID)
 				if err != nil {
 					return err

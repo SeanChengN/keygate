@@ -333,6 +333,12 @@ type License struct {
 	ExternalCustomerID  string `bun:",notnull,default:''" json:"external_customer_id,omitempty"`
 	ExternalWorkspaceID string `bun:",notnull,default:''" json:"external_workspace_id,omitempty"`
 
+	IssuanceBatchID    string     `json:"issuance_batch_id,omitempty"`
+	ActivationInterval string     `json:"activation_interval,omitempty"`
+	ActivationTimezone string     `json:"activation_timezone,omitempty"`
+	FirstExportID      string     `json:"first_export_id,omitempty"`
+	FirstExportedAt    *time.Time `json:"first_exported_at,omitempty"`
+
 	CreatedAt time.Time `bun:",nullzero,default:now()" json:"created_at"`
 	UpdatedAt time.Time `bun:",nullzero,default:now()" json:"updated_at"`
 
@@ -345,13 +351,14 @@ type License struct {
 }
 
 const (
-	StatusActive    = "active"
-	StatusTrialing  = "trialing"
-	StatusPastDue   = "past_due"
-	StatusCanceled  = "canceled"
-	StatusExpired   = "expired"
-	StatusSuspended = "suspended"
-	StatusRevoked   = "revoked"
+	StatusPendingActivation = "pending_activation"
+	StatusActive            = "active"
+	StatusTrialing          = "trialing"
+	StatusPastDue           = "past_due"
+	StatusCanceled          = "canceled"
+	StatusExpired           = "expired"
+	StatusSuspended         = "suspended"
+	StatusRevoked           = "revoked"
 )
 
 // ─── Activation ───

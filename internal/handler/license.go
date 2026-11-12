@@ -67,6 +67,9 @@ func (h *LicenseHandler) Activate(c *gin.Context) {
 		DeviceProof:    req.deviceProofRequest.serviceInput(),
 	})
 	if result != nil {
+		if result.Status == "activation_pending" {
+			c.Set("idempotency_no_response_cache", true)
+		}
 		payload, _ := base64.RawURLEncoding.DecodeString(strings.SplitN(result.Token, ".", 2)[0])
 		if strings.Contains(string(payload), `"ai_credential"`) {
 			c.Set("idempotency_no_response_cache", true)
