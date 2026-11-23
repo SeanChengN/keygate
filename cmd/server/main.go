@@ -851,6 +851,7 @@ func main() {
 		admin.GET("/plans", adminH.ListPlans)
 		admin.GET("/products/:id/ai-account", adminH.GetAIAccount)
 		admin.PUT("/products/:id/ai-account", adminH.PutAIAccount)
+		admin.GET("/products/:id/ai-groups", adminH.GetAIGroupChoices)
 		admin.GET("/plans/:id/ai", adminH.GetAIPlan)
 		admin.PUT("/plans/:id/ai", adminH.PutAIPlan)
 		admin.GET("/plans/:id/ai/provision-preview", adminH.PreviewAIProvision)

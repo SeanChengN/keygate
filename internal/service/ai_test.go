@@ -18,6 +18,59 @@ import (
 	"github.com/tabloy/keygate/internal/store"
 )
 
+func TestJijiAvailableGroups(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		available  string
+		rates      string
+		rateStatus int
+		want       string
+	}{
+		{
+			name:      "account override and provider defaults",
+			available: `[{"id":53,"name":" Codex Temp ","rate_multiplier":0.15,"peak_rate_multiplier":0.3},{"id":52,"name":"Codex Pro","rate_multiplier":0.25}]`,
+			rates:     `{"53":0.125,"99":1}`,
+			want:      `[{"id":53,"name":"Codex Temp","rate_multiplier":0.125,"rate_source":"account"},{"id":52,"name":"Codex Pro","rate_multiplier":0.25,"rate_source":"group"}]`,
+		},
+		{name: "empty list", available: "[]", rates: "{}", want: "[]"},
+		{name: "rate lookup failed", available: `[{"id":53,"name":"Codex Temp","rate_multiplier":0.15}]`, rateStatus: 429},
+		{name: "missing base rate", available: `[{"id":53,"name":"Codex Temp"}]`, rates: "{}"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer synthetic-access" {
+					t.Errorf("unexpected provider request: %s %s", r.Method, r.URL.Path)
+				}
+				switch r.URL.Path {
+				case "/api/v1/groups/available":
+					fmt.Fprintf(w, `{"code":0,"data":%s}`, tc.available)
+				case "/api/v1/groups/rates":
+					if tc.rateStatus != 0 {
+						w.WriteHeader(tc.rateStatus)
+						return
+					}
+					fmt.Fprintf(w, `{"code":0,"data":%s}`, tc.rates)
+				default:
+					w.WriteHeader(404)
+				}
+			}))
+			defer server.Close()
+			client := &JijiClient{BaseURL: server.URL, HTTP: server.Client()}
+			result, err := client.AvailableGroups(context.Background(), "synthetic-access")
+			if tc.want == "" {
+				if err == nil || result != nil {
+					t.Fatalf("expected provider error without partial groups, got %v, %v", result, err)
+				}
+				return
+			}
+			raw, _ := json.Marshal(result)
+			if err != nil || string(raw) != tc.want {
+				t.Fatalf("groups = %s, error = %v", raw, err)
+			}
+		})
+	}
+}
+
 func TestAIMonthCycle(t *testing.T) {
 	plan := &model.Plan{Entitlements: []*model.Entitlement{{Feature: "studio.ai_profile", Value: `{"provider_id":"jiji","base_url":"https://api-slb.jiji.cc/v1","protocol":"openai"}`}}}
 	if hash, err := AIProfileBinding(plan); err != nil || hash != "7eef65cec0d8d147c617acbb2c3a07477ecee60dc63e5a0f5798c14e10d81781" {
@@ -90,6 +143,7 @@ type fakeAI struct {
 	keys                              map[int64]*JijiKey
 	creates, resets, rates, refreshes int
 	failReset                         bool
+	failDisable                       bool
 	unknownCreate                     bool
 	unknownRefresh                    bool
 }
@@ -146,6 +200,10 @@ func (f *fakeAI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.Method == "PUT" {
 			if v, ok := body["status"].(string); ok {
+				if v == "inactive" && f.failDisable {
+					w.WriteHeader(400)
+					return
+				}
 				k.Status = v
 			}
 			if v, ok := body["quota"].(float64); ok {
@@ -186,6 +244,29 @@ func (f *fakeAI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": data})
+}
+
+func TestPublishedAIKeyName(t *testing.T) {
+	for _, tc := range []struct {
+		name, observed, want     string
+		id, revision, generation int64
+		inferred                 bool
+	}{
+		{name: "unpublished", observed: "candidate", generation: 1},
+		{name: "legacy published", id: 10, revision: 1, generation: 1, want: "keygate-license-g1", inferred: true},
+		{name: "legacy unpublished rotation", id: 10, revision: 1, generation: 2},
+		{name: "observed during rotation", id: 10, revision: 1, generation: 2, observed: "actual-name", want: "actual-name"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			binding := &model.AIBinding{
+				LicenseID: "license", RemoteID: tc.id, Revision: tc.revision, Generation: tc.generation,
+				RemoteView: map[string]any{"name": tc.observed},
+			}
+			if name, inferred := PublishedAIKeyName(binding); name != tc.want || inferred != tc.inferred {
+				t.Fatalf("got %q (inferred %t), want %q (inferred %t)", name, inferred, tc.want, tc.inferred)
+			}
+		})
+	}
 }
 
 func TestAIProvisioningIntegration(t *testing.T) {
@@ -253,6 +334,14 @@ func TestAIProvisioningIntegration(t *testing.T) {
 	if b.State != "synced" || b.Revision != 1 || b.RemoteID != 1 || f.creates != 1 {
 		t.Fatalf("issue state %s, revision %d, id %d, creates %d: %s", b.State, b.Revision, b.RemoteID, f.creates, b.LastError)
 	}
+	assertPublishedName := func(want string) {
+		t.Helper()
+		actual, inferred := PublishedAIKeyName(b)
+		if actual != want || inferred {
+			t.Fatalf("published key %d name = %q (inferred: %t), want %q", b.RemoteID, actual, inferred, want)
+		}
+	}
+	assertPublishedName(managedAIKeyName(lic.ID, 1))
 	if _, err = s.AIBinding(ctx, legacy.ID); err == nil {
 		t.Fatal("legacy backfilled")
 	}
@@ -301,12 +390,40 @@ func TestAIProvisioningIntegration(t *testing.T) {
 	if f.resets != 1 {
 		t.Fatal("idempotency failed")
 	}
+	f.keys[1].Name = "renamed-published-key"
+	enqueue("sync", "read-renamed-key")
+	f.failDisable = true
 	enqueue("rotate", "rotate-1")
+	b, err = s.AIBinding(ctx, lic.ID)
+	check(err)
+	if b.RemoteID != 1 || b.CandidateID != 2 || b.Generation != 2 || b.Revision != 1 {
+		t.Fatal("failed rotation replaced the current binding")
+	}
+	assertPublishedName("renamed-published-key")
+	f.failDisable = false
+	zone := b.Timezone
+	_, err = s.DB.ExecContext(ctx, "UPDATE license_ai_bindings SET timezone='invalid-zone' WHERE license_id=?", lic.ID)
+	check(err)
+	_, err = s.DB.ExecContext(ctx, "UPDATE license_ai_jobs SET state='pending' WHERE license_id=? AND action='rotate'", lic.ID)
+	check(err)
+	ai.Tick(ctx)
+	b, err = s.AIBinding(ctx, lic.ID)
+	check(err)
+	if b.RemoteID != 1 || b.CandidateID != 2 || b.State != "failed" {
+		t.Fatal("publication rollback changed the current binding")
+	}
+	assertPublishedName("renamed-published-key")
+	_, err = s.DB.ExecContext(ctx, "UPDATE license_ai_bindings SET timezone=? WHERE license_id=?", zone, lic.ID)
+	check(err)
+	_, err = s.DB.ExecContext(ctx, "UPDATE license_ai_jobs SET state='pending' WHERE license_id=? AND action='rotate'", lic.ID)
+	check(err)
+	ai.Tick(ctx)
 	b, err = s.AIBinding(ctx, lic.ID)
 	check(err)
 	if b.Revision != 2 || b.RemoteID != 2 || f.keys[1].Status != "inactive" {
 		t.Fatalf("rotation: %s", b.LastError)
 	}
+	assertPublishedName(managedAIKeyName(lic.ID, 2))
 	_, err = s.DB.ExecContext(ctx, "UPDATE license_ai_jobs SET state='running' WHERE license_id=? AND action='rotate'", lic.ID)
 	check(err)
 	ai.Tick(ctx)

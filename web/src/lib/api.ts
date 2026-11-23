@@ -103,12 +103,32 @@ export type AILimits = {
   rate_limit_7d: number
 }
 export type AIPlan = AILimits & { revision: number; summary: { state: string; count: number }[] }
+export type AIGroupChoice = {
+  id: number
+  name: string
+  rate_multiplier: number
+  rate_source: "group" | "account"
+}
 export type AIProvisionItem = { id: string; eligible: boolean; reason: string; state: string }
 export type AIProvisionPreview = { revision: number; config: AILimits; items: AIProvisionItem[] }
 export type AIProvisionBatch = { id: string; plan_id: string; revision: number; items: AIProvisionItem[] }
+export type LicenseAIJob = {
+  id: string
+  action: string
+  state: string
+  phase: string
+  created_at: string
+  attempts: number
+  next_attempt_at: string
+  last_error: string
+  last_error_code?: string
+}
+
 export type LicenseAI = {
   enrolled: boolean
   key_hint?: string
+  key_name?: string
+  key_name_inferred?: boolean
   binding?: {
     config: AILimits
     state: string
@@ -120,7 +140,7 @@ export type LicenseAI = {
     timezone: string
     remote: Record<string, string | number>
   }
-  jobs?: { id: string; action: string; state: string; phase: string; last_error: string; last_error_code?: string }[]
+  jobs?: LicenseAIJob[]
 }
 export type InventoryBatch = { id: string; product_id: string; plan_id: string; quantity: number; created_at: string }
 export type InventoryItem = { id: string; status: string; first_export_id?: string }
@@ -168,6 +188,8 @@ export const inventory = {
 }
 export const licenseAI = {
   account: (id: string) => get<AIAccountMetadata>(`/admin/products/${id}/ai-account`),
+  groups: (id: string, signal?: AbortSignal) =>
+    request<{ groups: AIGroupChoice[] }>(`/admin/products/${id}/ai-groups`, { signal }),
   saveAccount: (id: string, value: unknown) => put<AIAccountMetadata>(`/admin/products/${id}/ai-account`, value),
   plan: (id: string) => get<AIPlan>(`/admin/plans/${id}/ai`),
   savePlan: (id: string, value: AILimits) =>

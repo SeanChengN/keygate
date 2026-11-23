@@ -159,7 +159,8 @@ export default function LicensesPage() {
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder={t("common.search")}
+            aria-label={t("licenses.searchPlaceholder")}
+            placeholder={t("licenses.searchPlaceholder")}
             value={search}
             onChange={(e) => {
               setSearch(e.target.value)
@@ -243,7 +244,7 @@ export default function LicensesPage() {
             <div className="h-64 animate-pulse bg-muted rounded-lg" />
           ) : (
             <>
-              <DataTable>
+              <DataTable className="[&_th]:whitespace-nowrap">
                 <DataTableHeader>
                   <DataTableRow>
                     <DataTableHead>
@@ -285,6 +286,7 @@ export default function LicensesPage() {
                     </DataTableHead>
                     <DataTableHead>{t("common.email")}</DataTableHead>
                     <DataTableHead>{t("customers.customer")}</DataTableHead>
+                    <DataTableHead>{t("licenses.authorizationId")}</DataTableHead>
                     <DataTableHead>{t("licenses.licenseKey")}</DataTableHead>
                     <DataTableHead>{t("common.product")}</DataTableHead>
                     <DataTableHead>{t("common.plan")}</DataTableHead>
@@ -295,7 +297,7 @@ export default function LicensesPage() {
                   </DataTableRow>
                 </DataTableHeader>
                 <DataTableBody>
-                  {licenses.length === 0 && <DataTableEmpty colSpan={10} message={t("licenses.empty")} />}
+                  {licenses.length === 0 && <DataTableEmpty colSpan={11} message={t("licenses.empty")} />}
                   {licenses.map((lic) => (
                     <DataTableRow key={lic.id}>
                       <DataTableCell>
@@ -321,6 +323,9 @@ export default function LicensesPage() {
                         {lic.customer?.name || t("customers.unassigned")}
                       </DataTableCell>
                       <DataTableCell>
+                        <code className="select-text whitespace-nowrap font-mono text-xs">{lic.id}</code>
+                      </DataTableCell>
+                      <DataTableCell>
                         <code className="text-xs bg-muted px-1.5 py-0.5 rounded">
                           {maskKey(data?.license_key_hints?.[lic.id])}
                         </code>
@@ -328,16 +333,18 @@ export default function LicensesPage() {
                       <DataTableCell className="text-muted-foreground">{lic.product?.name || "-"}</DataTableCell>
                       <DataTableCell className="text-muted-foreground">{lic.plan?.name || "-"}</DataTableCell>
                       <DataTableCell>
-                        <Badge className={statusColor(lic.status)}>{t(`status.${lic.status}` as any)}</Badge>
+                        <Badge className={`whitespace-nowrap ${statusColor(lic.status)}`}>
+                          {t(`status.${lic.status}` as any)}
+                        </Badge>
                       </DataTableCell>
-                      <DataTableCell className="text-muted-foreground text-xs">
+                      <DataTableCell className="whitespace-nowrap text-xs text-muted-foreground">
                         {lic.status === "pending_activation"
                           ? t("inventory.unstarted")
                           : lic.valid_until
                             ? formatDate(lic.valid_until)
                             : t("licenses.perpetual")}
                       </DataTableCell>
-                      <DataTableCell className="text-muted-foreground text-xs">
+                      <DataTableCell className="whitespace-nowrap text-xs text-muted-foreground">
                         {formatDate(lic.created_at)}
                       </DataTableCell>
                       <DataTableCell>
@@ -842,7 +849,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
         {isLoading || !lic ? (
           <div className="h-48 animate-pulse bg-muted rounded-lg" />
         ) : (
-          <Tabs defaultValue="info">
+          <Tabs defaultValue="info" className="min-w-0">
             <TabsList>
               <TabsTrigger value="info">{t("licenses.info")}</TabsTrigger>
               <TabsTrigger value="usage">{t("licenses.usage")}</TabsTrigger>
@@ -1280,7 +1287,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
 
             {lic.product?.slug === "movaura-studio" && lic.product.type === "desktop" && (
               <TabsContent value="ai">
-                <LicenseAICard id={id} />
+                <LicenseAICard id={id} productId={lic.product_id} />
               </TabsContent>
             )}
             <TabsContent value="usage">

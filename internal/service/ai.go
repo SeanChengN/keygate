@@ -341,7 +341,8 @@ func (s *AIService) process(ctx context.Context, job *model.AIJob) {
 				}
 			}
 			b.LastError = msg
-			_, _ = s.Store.DB.NewUpdate().Model(b).Column("state", "last_error", "remote_view", "updated_at").WherePK().Exec(ctx)
+			_, _ = s.Store.DB.NewUpdate().Model(b).Column("state", "last_error", "remote_view", "updated_at").
+				WherePK().Where("remote_id = ?", b.RemoteID).Exec(ctx)
 		}
 		if !aiUsable(lic, time.Now()) && b.RemoteID == 0 && b.CandidateID == 0 && job.Phase == "" {
 			finish("done", nil)
@@ -437,7 +438,7 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 		}
 		for _, id := range []int64{b.RemoteID, b.CandidateID} {
 			if id > 0 {
-				if err := s.syncRemote(ctx, token, id, l, b, false); err != nil {
+				if _, err := s.syncRemote(ctx, token, id, l, b, false); err != nil {
 					return err
 				}
 			}
@@ -447,7 +448,7 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 		}
 		// Recover an unrecorded create before declaring a revocation synchronized.
 		if b.CandidateID == 0 && (j.Phase == "create_sent" || unknownCreate) {
-			key, err := s.Client.Find(ctx, token, fmt.Sprintf("keygate-%s-g%d", l.ID, b.Generation))
+			key, err := s.Client.Find(ctx, token, managedAIKeyName(l.ID, b.Generation))
 			if err != nil {
 				return err
 			}
@@ -462,7 +463,8 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 			if err := s.checkpoint(ctx, b, j, "candidate_disabled_pending"); err != nil {
 				return err
 			}
-			return s.syncRemote(ctx, token, key.ID, l, b, false)
+			_, err = s.syncRemote(ctx, token, key.ID, l, b, false)
+			return err
 		}
 		if j.Action == "rotate" && j.Phase != "" && j.Phase != "published" {
 			return errors.New("rotation paused by license state; retry after reviewing license validity")
@@ -479,7 +481,7 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 				return err
 			}
 		}
-		name := fmt.Sprintf("keygate-%s-g%d", l.ID, b.Generation)
+		name := managedAIKeyName(l.ID, b.Generation)
 		if b.CandidateID == 0 {
 			key, err := s.Client.Find(ctx, token, name)
 			if err != nil {
@@ -510,7 +512,8 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 				return err
 			}
 		}
-		if err := s.syncRemote(ctx, token, b.CandidateID, l, b, usable); err != nil {
+		candidateView, err := s.syncRemote(ctx, token, b.CandidateID, l, b, usable)
+		if err != nil {
 			return err
 		}
 		if b.RemoteID > 0 && b.RemoteID != b.CandidateID {
@@ -525,16 +528,19 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 				return errors.New("old key disable readback failed")
 			}
 		}
-		b.RemoteID = b.CandidateID
-		b.Secret = b.CandidateSecret
-		b.CandidateID = 0
-		b.CandidateSecret = nil
-		b.Revision++
-		if err := s.checkpoint(ctx, b, j, "published"); err != nil {
+		published := *b
+		published.RemoteID = b.CandidateID
+		published.RemoteView = candidateView
+		published.Secret = b.CandidateSecret
+		published.CandidateID = 0
+		published.CandidateSecret = nil
+		published.Revision++
+		if err := s.checkpoint(ctx, &published, j, "published"); err != nil {
 			return err
 		}
+		*b = published
 	}
-	if err := s.syncRemote(ctx, token, b.RemoteID, l, b, usable); err != nil {
+	if _, err := s.syncRemote(ctx, token, b.RemoteID, l, b, usable); err != nil {
 		return err
 	}
 	if j.Action == "reset_quota" || j.Action == "reset_rate" || j.Action == "monthly" {
@@ -555,6 +561,9 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 			if err != nil {
 				return err
 			}
+			if before.ID != b.RemoteID {
+				return errors.New("provider identity mismatch; manual resolution required")
+			}
 			b.RemoteView = before.Public()
 			if err := s.checkpoint(ctx, b, j, "reset_sent"); err != nil {
 				return err
@@ -570,7 +579,7 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 			if err != nil {
 				return errors.New("reset readback unknown; manual resolution required")
 			}
-			if after.Quota != before.Quota || after.GroupID != before.GroupID || after.Status != before.Status || after.ExpiresAt == nil || before.ExpiresAt == nil || !after.ExpiresAt.Equal(*before.ExpiresAt) || after.Rate5H != before.Rate5H || after.Rate1D != before.Rate1D || after.Rate7D != before.Rate7D ||
+			if after.ID != b.RemoteID || after.Quota != before.Quota || after.GroupID != before.GroupID || after.Status != before.Status || after.ExpiresAt == nil || before.ExpiresAt == nil || !after.ExpiresAt.Equal(*before.ExpiresAt) || after.Rate5H != before.Rate5H || after.Rate1D != before.Rate1D || after.Rate7D != before.Rate7D ||
 				field == "reset_quota" && (after.QuotaUsed != 0 || after.Usage5H != before.Usage5H || after.Usage1D != before.Usage1D || after.Usage7D != before.Usage7D) ||
 				field == "reset_rate_limit_usage" && (after.QuotaUsed != before.QuotaUsed || after.Usage5H != 0 || after.Usage1D != 0 || after.Usage7D != 0) {
 				return errors.New("reset readback mismatch; manual resolution required")
@@ -584,22 +593,28 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 	if err != nil {
 		return err
 	}
+	if key.ID != b.RemoteID {
+		return errors.New("provider identity mismatch; manual resolution required")
+	}
 	b.RemoteView = key.Public()
 	return nil
 }
 
-func (s *AIService) syncRemote(ctx context.Context, token string, id int64, l *model.License, b *model.AIBinding, usable bool) error {
+func (s *AIService) syncRemote(ctx context.Context, token string, id int64, l *model.License, b *model.AIBinding, usable bool) (map[string]any, error) {
 	if id == 0 {
-		return nil
+		return nil, nil
 	}
 	before, err := s.Client.Get(ctx, token, id)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	if before.ID != id {
+		return nil, errors.New("provider identity mismatch; manual resolution required")
 	}
 	if usable {
 		profile, err := AIProfileBinding(l.Plan)
 		if err != nil || profile != b.ProfileBinding {
-			return errors.New("AI plan route changed; administrator action required")
+			return nil, errors.New("AI plan route changed; administrator action required")
 		}
 	}
 	status := "inactive"
@@ -611,20 +626,40 @@ func (s *AIService) syncRemote(ctx context.Context, token string, id int64, l *m
 		v["expires_at"] = l.ValidUntil.UTC().Truncate(time.Second).Format(time.RFC3339)
 	}
 	if err := s.Client.Update(ctx, token, id, v); err != nil {
-		return err
+		return nil, err
 	}
 	k, err := s.Client.Get(ctx, token, id)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if before.Key != k.Key || k.QuotaUsed < before.QuotaUsed {
-		return errors.New("provider changed key or cleared historical usage; manual resolution required")
+		return nil, errors.New("provider changed key or cleared historical usage; manual resolution required")
 	}
 	if k.ID != id || k.Status != status || k.GroupID != b.Config.GroupID || k.Quota != b.Config.Quota || k.Rate5H != b.Config.Rate5H || k.Rate1D != b.Config.Rate1D || k.Rate7D != b.Config.Rate7D || l.ValidUntil != nil && (k.ExpiresAt == nil || k.ExpiresAt.Unix() != l.ValidUntil.Unix()) {
-		return errors.New("provider configuration readback mismatch")
+		return nil, errors.New("provider configuration readback mismatch")
 	}
+	view := k.Public()
 	if id == b.RemoteID {
-		b.RemoteView = k.Public()
+		b.RemoteView = view
 	}
-	return nil
+	return view, nil
+}
+
+func managedAIKeyName(licenseID string, generation int64) string {
+	return fmt.Sprintf("keygate-%s-g%d", licenseID, generation)
+}
+
+// PublishedAIKeyName returns the last observed name, or the generated name
+// for a legacy binding whose generation is accounted for by publication.
+func PublishedAIKeyName(b *model.AIBinding) (name string, inferred bool) {
+	if b.RemoteID == 0 {
+		return "", false
+	}
+	if name, ok := b.RemoteView["name"].(string); ok && name != "" {
+		return name, false
+	}
+	if b.Revision > 0 && b.Revision == b.Generation {
+		return managedAIKeyName(b.LicenseID, b.Generation), true
+	}
+	return "", false
 }

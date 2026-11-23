@@ -61,6 +61,46 @@ func createTestLicense(t *testing.T, s *store.Store, ctx context.Context) *model
 	return lic
 }
 
+func TestListLicensesSearchByID(t *testing.T) {
+	s := setupTestDB(t)
+	defer s.Close()
+	ctx := context.Background()
+	regular := createTestLicense(t, s, ctx)
+	stock := &model.License{
+		ProductID: regular.ProductID, PlanID: regular.PlanID,
+		LicenseKey: "STOCK-" + store.NewID(), Status: model.StatusPendingActivation,
+	}
+	if err := s.CreateLicense(ctx, stock); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, product, status, query, want string
+	}{
+		{"stock ID without email", stock.ProductID, stock.Status, "  " + stock.ID + "  ", stock.ID},
+		{"partial ID", stock.ProductID, "", stock.ID[:18], ""},
+		{"different product", "foreign-product", "", stock.ID, ""},
+		{"different status", stock.ProductID, regular.Status, stock.ID, ""},
+		{"email", regular.ProductID, "", strings.ToUpper(regular.Email), regular.ID},
+		{"key prefix", stock.ProductID, "", stock.LicenseKey[:16], stock.ID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			items, total, err := s.ListLicenses(ctx, store.LicenseListFilter{
+				ProductID: tc.product, Status: tc.status, Search: tc.query, Limit: 10,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "" {
+				if total != 0 || len(items) != 0 {
+					t.Fatalf("unexpected match: total=%d", total)
+				}
+			} else if total != 1 || len(items) != 1 || items[0].ID != tc.want {
+				t.Fatalf("expected one match for %q, got total=%d", tc.want, total)
+			}
+		})
+	}
+}
+
 func TestIncrementUsageCounterWithLimit_Atomic(t *testing.T) {
 	s := setupTestDB(t)
 	defer s.Close()

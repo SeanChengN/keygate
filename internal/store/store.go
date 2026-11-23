@@ -739,9 +739,8 @@ func (s *Store) ListLicenses(ctx context.Context, f LicenseListFilter) ([]*model
 	if f.ExternalWorkspaceID != "" {
 		q = q.Where("license.external_workspace_id = ?", f.ExternalWorkspaceID)
 	}
-	if f.Search != "" {
-		// Only search by email and key prefix — never expose full key via wildcard search.
-		q = q.Where("(license.email ILIKE ? OR license.license_key LIKE ?)", "%"+f.Search+"%", f.Search+"%")
+	if search := strings.TrimSpace(f.Search); search != "" {
+		q = q.Where("(license.id = ? OR license.email ILIKE ? OR license.license_key LIKE ?)", search, "%"+search+"%", search+"%")
 	}
 	total, err := q.Count(ctx)
 	if err != nil {

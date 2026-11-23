@@ -203,7 +203,7 @@ export default function PlansPage() {
                         <DataTableCell>
                           <div className="flex gap-1">
                             {products.find((pr) => pr.id === p.product_id)?.slug === "movaura-studio" &&
-                              prodType === "desktop" && <AIPlanDialog id={p.id} />}
+                              prodType === "desktop" && <AIPlanDialog id={p.id} productId={p.product_id} />}
                             {p.checkout_id && (
                               <Button
                                 variant="ghost"

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -38,7 +39,21 @@ func TestAIAdminScopeAndRedaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ai := &service.AIService{Store: s, AEAD: aead, Client: service.NewJijiClient()}
+	groupServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer SYNTHETIC-ACCESS" {
+			t.Error("group request missing account authorization")
+		}
+		switch r.URL.Path {
+		case "/api/v1/groups/available":
+			_, _ = w.Write([]byte(`{"code":0,"data":[{"id":53,"name":"Synthetic group","rate_multiplier":0.15,"secret":"SYNTHETIC-EXTRA"}]}`))
+		case "/api/v1/groups/rates":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"53":0.125}}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer groupServer.Close()
+	ai := &service.AIService{Store: s, AEAD: aead, Client: &service.JijiClient{BaseURL: groupServer.URL, HTTP: groupServer.Client()}}
 	if err = ai.SaveAccount(ctx, p.ID, true, &service.AIAccountTokens{AccessToken: "SYNTHETIC-ACCESS", RefreshToken: "SYNTHETIC-REFRESH", ExpiresAt: time.Now().Add(time.Hour).Unix()}); err != nil {
 		t.Fatal(err)
 	}
@@ -51,10 +66,12 @@ func TestAIAdminScopeAndRedaction(t *testing.T) {
 		}
 	})
 	r.GET("/products/:id/ai-account", h.GetAIAccount)
+	r.GET("/products/:id/ai-groups", h.GetAIGroupChoices)
 	r.PUT("/products/:id/ai-account", h.PutAIAccount)
 	r.PUT("/plans/:id/ai", h.PutAIPlan)
 	r.GET("/plans/:id/ai", h.GetAIPlan)
 	r.POST("/inventory", h.CreateInventoryBatch)
+	r.GET("/licenses", h.ListLicenses)
 	r.GET("/licenses/:id/ai", h.GetLicenseAI)
 	r.GET("/licenses/:id/key", h.RevealLicenseKey)
 	r.DELETE("/licenses/:id", h.DeleteLicense)
@@ -81,8 +98,17 @@ func TestAIAdminScopeAndRedaction(t *testing.T) {
 	if w = request("/products/"+p.ID+"/ai-account", true); w.Code != 403 {
 		t.Fatal("cross-product account scope accepted")
 	}
+	groupPath := "/products/" + p.ID + "/ai-groups"
+	if w = request(groupPath, true); w.Code != 403 {
+		t.Fatal("cross-product group scope accepted")
+	}
+	w = request(groupPath, false)
+	if w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" ||
+		!strings.Contains(w.Body.String(), `"rate_multiplier":0.125`) || strings.Contains(w.Body.String(), "SYNTHETIC-") {
+		t.Fatalf("unexpected group metadata response: %d %s", w.Code, w.Body.String())
+	}
 	var b model.AIBinding
-	if err = s.DB.NewSelect().Model(&b).Limit(1).Scan(ctx); err != nil {
+	if err = s.DB.NewSelect().Model(&b).Where("remote_id > 0 AND remote_view->>'name' <> ''").Limit(1).Scan(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if w = request("/licenses/"+b.LicenseID+"/ai", true); w.Code != 403 {
@@ -100,6 +126,23 @@ func TestAIAdminScopeAndRedaction(t *testing.T) {
 	w = request("/licenses/"+b.LicenseID+"/ai", false)
 	if w.Code != 200 || strings.Contains(w.Body.String(), "synthetic-") || strings.Contains(w.Body.String(), "candidate_secret") || strings.Contains(w.Body.String(), "\"secret\"") {
 		t.Fatal("AI details leaked credential")
+	}
+	var details struct {
+		Data struct {
+			KeyName  string `json:"key_name"`
+			Inferred bool   `json:"key_name_inferred"`
+		} `json:"data"`
+	}
+	if err = json.Unmarshal(w.Body.Bytes(), &details); err != nil || details.Data.KeyName != b.RemoteView["name"] || details.Data.Inferred {
+		t.Fatalf("expected actual published name, got %+v, error: %v", details.Data, err)
+	}
+	w = request("/licenses?search="+b.LicenseID, false)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), b.LicenseID) {
+		t.Fatal("license ID not found in admin list")
+	}
+	w = request("/licenses?search="+b.LicenseID, true)
+	if w.Code != 200 || strings.Contains(w.Body.String(), b.LicenseID) {
+		t.Fatal("license ID bypassed product scope")
 	}
 	// End-to-end management contract: zero quota is valid, grace remains gated.
 	plan := &model.Plan{ProductID: p.ID, Name: "Unlimited handler", Slug: store.NewID(), LicenseType: "subscription", BillingInterval: "year", GraceDays: 7, Active: true, LicenseModel: "standard"}

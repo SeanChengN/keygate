@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tabloy/keygate/internal/model"
@@ -31,6 +33,13 @@ type AIAccountTokens struct {
 	ExpiresAt    int64  `json:"expires_at"`
 }
 
+type JijiGroupChoice struct {
+	ID             int64   `json:"id"`
+	Name           string  `json:"name"`
+	RateMultiplier float64 `json:"rate_multiplier"`
+	RateSource     string  `json:"rate_source"`
+}
+
 type JijiKey struct {
 	ID        int64      `json:"id"`
 	Key       string     `json:"key"`
@@ -49,7 +58,7 @@ type JijiKey struct {
 }
 
 func (k *JijiKey) Public() map[string]any {
-	return map[string]any{"id": k.ID, "status": k.Status, "quota": k.Quota, "quota_used": k.QuotaUsed, "expires_at": k.ExpiresAt, "rate_limit_5h": k.Rate5H, "rate_limit_1d": k.Rate1D, "rate_limit_7d": k.Rate7D, "usage_5h": k.Usage5H, "usage_1d": k.Usage1D, "usage_7d": k.Usage7D}
+	return map[string]any{"id": k.ID, "name": k.Name, "status": k.Status, "quota": k.Quota, "quota_used": k.QuotaUsed, "expires_at": k.ExpiresAt, "rate_limit_5h": k.Rate5H, "rate_limit_1d": k.Rate1D, "rate_limit_7d": k.Rate7D, "usage_5h": k.Usage5H, "usage_1d": k.Usage1D, "usage_7d": k.Usage7D}
 }
 
 type JijiClient struct {
@@ -118,6 +127,43 @@ func (c *JijiClient) request(ctx context.Context, token, method, path string, in
 	}
 	return nil
 }
+func (c *JijiClient) AvailableGroups(ctx context.Context, token string) ([]JijiGroupChoice, error) {
+	var groups []struct {
+		ID             int64    `json:"id"`
+		Name           string   `json:"name"`
+		RateMultiplier *float64 `json:"rate_multiplier"`
+	}
+	if err := c.request(ctx, token, "GET", "/groups/available", nil, &groups); err != nil {
+		return nil, err
+	}
+	if groups == nil {
+		return nil, &AIProviderError{Code: "invalid_response"}
+	}
+	rates := map[string]*float64{}
+	if err := c.request(ctx, token, "GET", "/groups/rates", nil, &rates); err != nil {
+		return nil, err
+	}
+
+	choices := make([]JijiGroupChoice, 0, len(groups))
+	seen := make(map[int64]bool, len(groups))
+	for _, group := range groups {
+		name := strings.TrimSpace(group.Name)
+		if group.ID <= 0 || group.ID > 1<<53-1 || name == "" || seen[group.ID] {
+			return nil, &AIProviderError{Code: "invalid_response"}
+		}
+		seen[group.ID] = true
+		rate, source := group.RateMultiplier, "group"
+		if accountRate := rates[strconv.FormatInt(group.ID, 10)]; accountRate != nil {
+			rate, source = accountRate, "account"
+		}
+		if rate == nil || *rate < 0 {
+			return nil, &AIProviderError{Code: "invalid_response"}
+		}
+		choices = append(choices, JijiGroupChoice{ID: group.ID, Name: name, RateMultiplier: *rate, RateSource: source})
+	}
+	return choices, nil
+}
+
 func (c *JijiClient) Get(ctx context.Context, token string, id int64) (*JijiKey, error) {
 	k := new(JijiKey)
 	err := c.request(ctx, token, "GET", fmt.Sprintf("/keys/%d", id), nil, k)

@@ -43,6 +43,24 @@ func (h *AdminHandler) GetAIAccount(c *gin.Context) {
 	}
 	response.OK(c, metadata)
 }
+
+func (h *AdminHandler) GetAIGroupChoices(c *gin.Context) {
+	productID := c.Param("id")
+	if !h.aiReady(c) || !h.aiProduct(c, productID) {
+		return
+	}
+	account, err := h.AI.Account(c, productID)
+	if err != nil {
+		aiError(c, err, 400)
+		return
+	}
+	groups, err := h.AI.Client.AvailableGroups(c, account.AccessToken)
+	if err != nil {
+		aiError(c, err, 502)
+		return
+	}
+	response.OK(c, gin.H{"groups": groups})
+}
 func (h *AdminHandler) PutAIAccount(c *gin.Context) {
 	if !h.aiReady(c) || !h.aiProduct(c, c.Param("id")) {
 		return
@@ -188,7 +206,8 @@ func (h *AdminHandler) GetLicenseAI(c *gin.Context) {
 	for _, job := range jobs {
 		job.LastErrorCode = service.AIErrorCode(errorText(job.LastError))
 	}
-	response.OK(c, gin.H{"enrolled": true, "binding": b, "jobs": jobs, "key_hint": func() string {
+	name, inferred := service.PublishedAIKeyName(b)
+	response.OK(c, gin.H{"enrolled": true, "binding": b, "jobs": jobs, "key_name": name, "key_name_inferred": inferred, "key_hint": func() string {
 		if b.RemoteID > 0 {
 			return "•••• (managed)"
 		}
