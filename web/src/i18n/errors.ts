@@ -3,6 +3,14 @@ import en from "./locales/en"
 import zh from "./locales/zh"
 
 const codes: Record<string, TranslationKeys> = {
+  EMAIL_NOT_CONFIGURED: "settings.smtpSourceUnconfigured",
+  EMAIL_INVALID_SETTINGS: "settings.smtpInvalid",
+  EMAIL_OWNER_REQUIRED: "settings.smtpOwnerOnly",
+  EMAIL_CONNECTION_FAILED: "settings.smtpConnectionFailed",
+  EMAIL_TLS_FAILED: "settings.smtpTLSFailed",
+  EMAIL_AUTH_FAILED: "settings.smtpAuthFailed",
+  EMAIL_ENVELOPE_FAILED: "settings.smtpEnvelopeFailed",
+  EMAIL_SEND_FAILED: "settings.testEmailFailed",
   AI_PENDING: "errors.aiPending",
   LICENSE_KEY_UNAVAILABLE: "errors.licenseKeyUnavailable",
   AI_DELETE_BUSY: "errors.deleteBusy",

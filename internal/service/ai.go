@@ -119,56 +119,6 @@ func MonthCycle(anchor, now time.Time, zone string) (string, time.Time, error) {
 	return fmt.Sprint(index), boundary(index + 1), nil
 }
 
-func (s *AIService) Account(ctx context.Context, productID string) (*AIAccountTokens, error) {
-	var tokens AIAccountTokens
-	err := s.Store.DB.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", "ai-account:"+productID); err != nil {
-			return err
-		}
-		var row struct {
-			Secret  []byte
-			Enabled bool
-			State   string
-		}
-		if err := s.Store.DB.NewSelect().Table("ai_provider_accounts").Column("secret", "enabled", "state").Where("product_id = ?", productID).Scan(ctx, &row); err != nil {
-			return errors.New("jiji account is not configured")
-		}
-		if !row.Enabled || row.State != "ready" {
-			return errors.New("jiji account needs administrator attention")
-		}
-		if err := s.open(row.Secret, "account:"+productID, &tokens); err != nil {
-			return err
-		}
-		if tokens.ExpiresAt <= time.Now().Unix()+300 {
-			// Persist BEFORE rotating the upstream refresh token. A crash or unknown
-			// response must require intervention, never replay the previous token.
-			if _, err := s.Store.DB.ExecContext(ctx, "UPDATE ai_provider_accounts SET state = 'refreshing' WHERE product_id = ?", productID); err != nil {
-				return err
-			}
-			next, err := s.Client.Refresh(ctx, &tokens)
-			if err != nil {
-				_, _ = s.Store.DB.ExecContext(ctx, "UPDATE ai_provider_accounts SET state = 'attention' WHERE product_id = ?", productID)
-				return nil
-			}
-			tokens = *next
-			raw, err := s.seal(tokens, "account:"+productID)
-			if err != nil {
-				return err
-			}
-			_, err = s.Store.DB.ExecContext(ctx, "UPDATE ai_provider_accounts SET secret = ?, state = 'ready', updated_at = now() WHERE product_id = ?", raw, productID)
-			return err
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	if tokens.ExpiresAt <= time.Now().Unix()+300 {
-		return nil, errors.New("jiji refresh needs administrator attention")
-	}
-	return &tokens, nil
-}
-
 func (s *AIService) SaveAccount(ctx context.Context, id string, enabled bool, tokens *AIAccountTokens) error {
 	if s.AEAD == nil {
 		return errors.New("AI encryption is not configured")
@@ -194,7 +144,7 @@ func (s *AIService) SaveAccount(ctx context.Context, id string, enabled bool, to
 		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO ai_provider_accounts(product_id, enabled, secret) VALUES (?, ?, ?) ON CONFLICT (product_id) DO UPDATE SET enabled = EXCLUDED.enabled, secret = EXCLUDED.secret, credential_revision = ai_provider_accounts.credential_revision + 1, state = 'ready', updated_at = now()`, id, enabled, raw)
+		_, err = tx.ExecContext(ctx, `INSERT INTO ai_provider_accounts(product_id, enabled, secret) VALUES (?, ?, ?) ON CONFLICT (product_id) DO UPDATE SET enabled = EXCLUDED.enabled, secret = EXCLUDED.secret, credential_revision = ai_provider_accounts.credential_revision + 1, state = 'ready', health_error = '', alert_id = NULL, updated_at = now()`, id, enabled, raw)
 		return err
 	})
 }
@@ -348,7 +298,7 @@ func (s *AIService) process(ctx context.Context, job *model.AIJob) {
 			finish("done", nil)
 			return nil
 		}
-		tokens, err := s.Account(ctx, b.ProductID)
+		tokens, err := s.account(ctx, b.ProductID, false)
 		if err != nil {
 			finish("failed", err)
 			return nil
@@ -365,7 +315,7 @@ func (s *AIService) process(ctx context.Context, job *model.AIJob) {
 					state = "uncertain"
 				}
 				if pe.Status == 401 || pe.Status == 403 || pe.Status == 429 && pe.Code != "insufficient_quota" {
-					_, _ = s.Store.DB.ExecContext(ctx, "UPDATE ai_provider_accounts SET state = 'attention' WHERE product_id = ?", b.ProductID)
+					s.noteAccountAuthFailure(ctx, b.ProductID, tokens)
 				}
 			}
 			if strings.Contains(err.Error(), "manual resolution") {

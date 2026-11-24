@@ -1153,15 +1153,10 @@ func (s *Store) ActivateWithinLimit(ctx context.Context, act *model.Activation, 
 // ─── Email Queue ───
 
 type QueuedEmail struct {
-	ID          string     `bun:"id,pk"`
-	ToAddr      string     `bun:"to_addr"`
-	Subject     string     `bun:"subject"`
-	Body        string     `bun:"body"`
-	Attempts    int        `bun:"attempts"`
-	MaxAttempts int        `bun:"max_attempts"`
-	Status      string     `bun:"status"`
-	NextRetry   *time.Time `bun:"next_retry"`
-	Error       string     `bun:"error"`
+	ID      string `bun:"id"`
+	ToAddr  string `bun:"to_addr"`
+	Subject string `bun:"subject"`
+	Body    string `bun:"body"`
 }
 
 func (s *Store) EnqueueEmail(ctx context.Context, to, subject, body string) error {
@@ -1172,30 +1167,28 @@ func (s *Store) EnqueueEmail(ctx context.Context, to, subject, body string) erro
 	return err
 }
 
-func (s *Store) ListPendingEmails(ctx context.Context, limit int) ([]*QueuedEmail, error) {
-	var out []*QueuedEmail
-	err := s.DB.NewRaw(
-		"SELECT id, to_addr, subject, body, attempts, max_attempts, status, next_retry, error FROM email_queue WHERE status = 'pending' AND (next_retry IS NULL OR next_retry <= now()) ORDER BY created_at ASC LIMIT ?",
-		limit,
-	).Scan(ctx, &out)
-	return out, err
+func LockPendingEmail(ctx context.Context, tx bun.Tx) (*QueuedEmail, error) {
+	email := new(QueuedEmail)
+	err := tx.NewRaw(`SELECT id, to_addr, subject, body FROM email_queue
+        WHERE status = 'pending' AND (next_retry IS NULL OR next_retry <= now())
+        ORDER BY created_at ASC, id ASC LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(ctx, email)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return email, err
 }
 
-func (s *Store) MarkEmailSent(ctx context.Context, id string) {
-	_, _ = s.DB.NewRaw(
-		"UPDATE email_queue SET status = 'sent', sent_at = now(), attempts = attempts + 1 WHERE id = ?", id,
-	).Exec(ctx)
-}
-
-func (s *Store) MarkEmailFailed(ctx context.Context, id string, errMsg string) {
-	_, _ = s.DB.NewRaw(`
-		UPDATE email_queue SET
-			attempts = attempts + 1,
-			error = ?,
-			status = CASE WHEN attempts + 1 >= max_attempts THEN 'failed' ELSE 'pending' END,
-			next_retry = CASE WHEN attempts + 1 < max_attempts THEN now() + (interval '1 minute' * power(2, attempts)) ELSE NULL END
-		WHERE id = ?
-	`, errMsg, id).Exec(ctx)
+func RecordEmailAttempt(ctx context.Context, tx bun.Tx, id, code string) error {
+	if code == "" {
+		_, err := tx.ExecContext(ctx, `UPDATE email_queue SET status = 'sent', sent_at = clock_timestamp(),
+            attempts = attempts + 1, error = '', next_retry = NULL WHERE id = ?`, id)
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE email_queue SET attempts = attempts + 1, error = ?,
+        status = CASE WHEN attempts + 1 >= max_attempts THEN 'failed' ELSE 'pending' END,
+        next_retry = CASE WHEN attempts + 1 < max_attempts THEN now() + (interval '1 minute' * power(2, attempts)) ELSE NULL END
+        WHERE id = ?`, code, id)
+	return err
 }
 
 // UpdateLicenseEmailByStripeCustomer updates email on all licenses for a Stripe customer.

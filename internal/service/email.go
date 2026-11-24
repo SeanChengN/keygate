@@ -15,40 +15,37 @@ import (
 	"time"
 
 	"github.com/tabloy/keygate/internal/branding"
+	"github.com/tabloy/keygate/internal/crypto"
 	"github.com/tabloy/keygate/internal/store"
+	"github.com/uptrace/bun"
 )
 
 // emailFooter returns the attribution footer appended to all outgoing emails.
 func emailFooter() string { return branding.EmailFooter }
 
 type EmailService struct {
-	host     string
-	port     string
-	username string
-	password string
-	from     string
-	enabled  bool
-	logger   *slog.Logger
-	store    *store.Store
-	// tlsConfig overrides the default STARTTLS settings. Production
-	// leaves this nil so sendOnce builds the standard verify-the-
-	// chain tls.Config. Tests inject a config with
-	// InsecureSkipVerify=true so they can wire up an ephemeral
-	// self-signed cert without poking holes in production trust.
-	tlsConfig *tls.Config
+	environment      smtpConfig
+	logger           *slog.Logger
+	store            *store.Store
+	smtpAEAD         *crypto.AESGCM
+	previousSMTPAEAD *crypto.AESGCM
+	tlsConfig        *tls.Config // Test override. Production uses verified TLS.
 }
 
-func (s *EmailService) IsConfigured() bool { return s.enabled }
+func (s *EmailService) IsConfigured() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := s.effectiveSMTP(ctx)
+	return err == nil
+}
 
-func NewEmailService(host, port, username, password, from string, logger *slog.Logger, s *store.Store) *EmailService {
-	enabled := host != "" && from != ""
-	if !enabled {
-		logger.Warn("email service disabled: SMTP not configured")
+func NewEmailService(host, port, username, password, from string, logger *slog.Logger, db *store.Store) *EmailService {
+	if port == "" {
+		port = "587"
 	}
 	return &EmailService{
-		host: host, port: port, username: username,
-		password: password, from: from, enabled: enabled, logger: logger,
-		store: s,
+		environment: smtpConfig{host: host, port: port, username: username, password: password, from: from},
+		logger:      logger, store: db,
 	}
 }
 
@@ -80,18 +77,34 @@ func DefaultTemplates() map[string]string {
 }
 
 func (s *EmailService) Send(to, subject, htmlBody string) error {
-	if !s.enabled {
-		s.logger.Info("email skipped (not configured)", "to", to, "subject", subject)
-		return nil
+	err := s.SendConfigured(context.Background(), to, subject, htmlBody)
+	if errors.Is(err, ErrSMTPNotConfigured) {
+		return nil // Mail remains optional for existing best-effort callers.
 	}
+	return err
+}
 
-	// Append attribution footer (AGPL v3 Section 7b — see NOTICE)
-	if !strings.Contains(htmlBody, branding.Domain) {
-		htmlBody = strings.Replace(htmlBody, "</body>", emailFooter()+"</body>", 1)
+func (s *EmailService) SendConfigured(ctx context.Context, to, subject, htmlBody string) error {
+	config, err := s.effectiveSMTP(ctx)
+	if err != nil {
+		return err
 	}
+	return s.deliver(ctx, config, to, subject, htmlBody, true)
+}
 
+func (s *EmailService) deliver(ctx context.Context, config smtpConfig, to, subject, htmlBody string, retry bool) error {
+	if !strings.Contains(htmlBody, emailFooter()) {
+		if strings.Contains(htmlBody, "</body>") {
+			htmlBody = strings.Replace(htmlBody, "</body>", emailFooter()+"</body>", 1)
+		} else {
+			htmlBody += emailFooter()
+		}
+	}
+	if validateSMTPLine(subject) != nil || validateSMTPLine(config.from) != nil || validateSMTPLine(to) != nil {
+		return &smtpFailure{code: "EMAIL_ENVELOPE_FAILED", err: errors.New("invalid SMTP header")}
+	}
 	msg := strings.Join([]string{
-		"From: " + s.from,
+		"From: " + config.from,
 		"To: " + to,
 		"Subject: " + subject,
 		"MIME-Version: 1.0",
@@ -99,125 +112,133 @@ func (s *EmailService) Send(to, subject, htmlBody string) error {
 		"",
 		htmlBody,
 	}, "\r\n")
-
-	addr := s.host + ":" + s.port
-	err := s.sendOnce(addr, to, []byte(msg))
-	if err != nil {
-		// Retry once after a short delay — transient TCP / TLS hiccups.
-		s.logger.Warn("email send failed, retrying", "to", to, "error", err)
-		time.Sleep(3 * time.Second)
-		err = s.sendOnce(addr, to, []byte(msg))
-		if err != nil {
-			s.logger.Error("email send failed after retry", "to", to, "error", err)
-			return fmt.Errorf("email send: %w", err)
+	addr := net.JoinHostPort(config.host, config.port)
+	err := s.sendOnce(ctx, config, addr, to, []byte(msg))
+	// Retry only before a message could have been accepted by the server.
+	if retry && SMTPFailureCode(err) == "EMAIL_CONNECTION_FAILED" {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+			err = s.sendOnce(ctx, config, addr, to, []byte(msg))
 		}
 	}
-	s.logger.Info("email sent", "to", to, "subject", subject)
+	if err != nil {
+		code := SMTPFailureCode(err)
+		s.logger.Warn("email delivery failed", "code", code)
+		return &smtpFailure{code: code, err: errors.New("SMTP delivery did not complete")}
+	}
 	return nil
 }
 
-// sendOnce drives the SMTP conversation manually so we can negotiate
-// AUTH against whatever mechanism the server actually advertises.
-// Go's stdlib smtp.SendMail unconditionally drives the smtp.Auth you
-// hand it, even if the server doesn't advertise that mechanism —
-// which is exactly why smtp.PlainAuth fails against smtp.office365.com
-// (Microsoft advertises LOGIN + XOAUTH2 only; PLAIN is rejected with
-// "504 5.7.4 Unrecognized authentication type").
-//
-// Order of operations:
-//  1. TCP dial.
-//  2. EHLO (records server-advertised extensions).
-//  3. STARTTLS if advertised — Office 365 / Gmail / most modern
-//     submission endpoints require it on port 587.
-//  4. EHLO again (Client.StartTLS does this internally; the
-//     extension list refreshes — AUTH only appears post-TLS on
-//     stricter servers).
-//  5. Pick AUTH mechanism from the post-TLS list:
-//     - PLAIN if advertised (standard, base64 single round-trip)
-//     - else LOGIN if advertised (Microsoft, some older relays)
-//     - else error out
-//  6. MAIL/RCPT/DATA/QUIT.
-//
-// We intentionally do NOT speak SMTP over plaintext when credentials
-// are present — if the server doesn't advertise STARTTLS, the auth
-// step returns the "unencrypted connection" error from PlainAuth's
-// own guard. That's the safe default; relay-style deployments that
-// genuinely want plaintext auth can run their own postfix in front.
-func (s *EmailService) sendOnce(addr, to string, msg []byte) error {
-	// The SMTP envelope sender (MAIL FROM, RFC 5321) must be a BARE
-	// address — "noreply@x.com", never "Keygate <noreply@x.com>".
-	// The display-name form is only legal in the RFC 5322 "From:"
-	// header (which Send() builds separately). Strict MTAs like
-	// Postmark reject a display-name envelope with
-	// "501 Bad sender address syntax". Parse once here so operators
-	// can keep configuring the friendly form in SMTP_FROM.
-	envelopeFrom, err := parseEnvelopeAddress(s.from)
-	if err != nil {
-		return fmt.Errorf("invalid SMTP_FROM %q: %w", s.from, err)
+type smtpFailure struct {
+	code string
+	err  error
+}
+
+func (e *smtpFailure) Error() string { return e.code + ": " + e.err.Error() }
+func (e *smtpFailure) Unwrap() error { return e.err }
+
+func SMTPFailureCode(err error) string {
+	var failure *smtpFailure
+	switch {
+	case err == nil:
+		return ""
+	case errors.As(err, &failure):
+		return failure.code
+	case errors.Is(err, ErrSMTPNotConfigured):
+		return "EMAIL_NOT_CONFIGURED"
+	case errors.Is(err, ErrSMTPInvalidSettings), errors.Is(err, ErrSMTPEncryption):
+		return "EMAIL_INVALID_SETTINGS"
 	}
-	// CR/LF guard (SMTP injection) — same as net/smtp.SendMail.
-	if err := validateSMTPLine(envelopeFrom); err != nil {
-		return err
+	return "EMAIL_SEND_FAILED"
+}
+
+// sendOnce supports implicit TLS on port 465 and STARTTLS on submission
+// ports. Authenticated sessions always verify TLS before sending credentials.
+func (s *EmailService) sendOnce(ctx context.Context, config smtpConfig, addr, to string, msg []byte) error {
+	fail := func(code string, err error) error { return &smtpFailure{code: code, err: err} }
+	from, err := parseEnvelopeAddress(config.from)
+	if err != nil {
+		return fail("EMAIL_ENVELOPE_FAILED", err)
 	}
 	if err := validateSMTPLine(to); err != nil {
-		return err
+		return fail("EMAIL_ENVELOPE_FAILED", err)
 	}
 
-	conn, err := net.DialTimeout("tcp", addr, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("dial: %w", err)
+		return fail("EMAIL_CONNECTION_FAILED", err)
 	}
-	c, err := smtp.NewClient(conn, s.host)
+	defer conn.Close()
+	deadline, _ := ctx.Deadline()
+	if err := conn.SetDeadline(deadline); err != nil {
+		return fail("EMAIL_CONNECTION_FAILED", err)
+	}
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
+
+	tlsConfig := s.tlsConfig
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{ServerName: config.host, MinVersion: tls.VersionTLS12}
+	}
+	var transport net.Conn = conn
+	encrypted := config.port == "465"
+	if encrypted {
+		secured := tls.Client(conn, tlsConfig)
+		if err := secured.HandshakeContext(ctx); err != nil {
+			return fail("EMAIL_TLS_FAILED", err)
+		}
+		transport = secured
+	}
+	client, err := smtp.NewClient(transport, config.host)
 	if err != nil {
-		_ = conn.Close()
-		return fmt.Errorf("smtp client: %w", err)
+		return fail("EMAIL_CONNECTION_FAILED", err)
 	}
-	defer c.Close() //nolint:errcheck
-
-	if err := c.Hello(localHostname()); err != nil {
-		return fmt.Errorf("ehlo: %w", err)
+	defer client.Close()
+	if err := client.Hello(localHostname()); err != nil {
+		return fail("EMAIL_CONNECTION_FAILED", err)
 	}
-
-	// STARTTLS upgrade if the server advertises it. (Client.StartTLS
-	// internally re-EHLOs so post-TLS extensions land in c.Extension.)
-	if ok, _ := c.Extension("STARTTLS"); ok {
-		cfg := s.tlsConfig
-		if cfg == nil {
-			cfg = &tls.Config{ServerName: s.host, MinVersion: tls.VersionTLS12}
+	if ok, _ := client.Extension("STARTTLS"); !encrypted && ok {
+		if err := client.StartTLS(tlsConfig); err != nil {
+			return fail("EMAIL_TLS_FAILED", err)
 		}
-		if err := c.StartTLS(cfg); err != nil {
-			return fmt.Errorf("starttls: %w", err)
-		}
+		encrypted = true
 	}
 
-	if s.username != "" {
-		auth, perr := pickAuth(c, s.host, s.username, s.password)
-		if perr != nil {
-			return perr
+	if !encrypted && (config.username != "" || config.port == "587") {
+		return fail("EMAIL_TLS_FAILED", errors.New("server does not support TLS"))
+	}
+	if config.username != "" {
+		auth, err := pickAuth(client, config.host, config.username, config.password)
+		if err != nil {
+			return fail("EMAIL_AUTH_FAILED", err)
 		}
-		if err := c.Auth(auth); err != nil {
-			return fmt.Errorf("auth: %w", err)
+		if err := client.Auth(auth); err != nil {
+			return fail("EMAIL_AUTH_FAILED", fmt.Errorf("auth: %w", err))
 		}
 	}
-
-	if err := c.Mail(envelopeFrom); err != nil {
-		return fmt.Errorf("mail from: %w", err)
+	if err := client.Mail(from); err != nil {
+		return fail("EMAIL_ENVELOPE_FAILED", err)
 	}
-	if err := c.Rcpt(to); err != nil {
-		return fmt.Errorf("rcpt to: %w", err)
+	if err := client.Rcpt(to); err != nil {
+		return fail("EMAIL_ENVELOPE_FAILED", err)
 	}
-	w, err := c.Data()
+	writer, err := client.Data()
 	if err != nil {
-		return fmt.Errorf("data: %w", err)
+		return fail("EMAIL_SEND_FAILED", err)
 	}
-	if _, err := w.Write(msg); err != nil {
-		_ = w.Close()
-		return fmt.Errorf("data write: %w", err)
+	if _, err := writer.Write(msg); err != nil {
+		return fail("EMAIL_SEND_FAILED", err)
 	}
-	if err := w.Close(); err != nil {
-		return fmt.Errorf("data close: %w", err)
+	if err := writer.Close(); err != nil {
+		return fail("EMAIL_SEND_FAILED", err)
 	}
-	return c.Quit()
+	// DATA succeeded. A QUIT error cannot undo the accepted delivery.
+	_ = client.Quit()
+	return nil
 }
 
 // pickAuth selects an SMTP AUTH mechanism based on what the server
@@ -646,15 +667,23 @@ func (s *EmailService) StartEmailQueueProcessor(ctx context.Context, db *store.S
 }
 
 func (s *EmailService) processQueue(ctx context.Context, db *store.Store) {
-	emails, err := db.ListPendingEmails(ctx, 20)
-	if err != nil {
-		return
-	}
-	for _, e := range emails {
-		if err := s.Send(e.ToAddr, e.Subject, e.Body); err != nil {
-			db.MarkEmailFailed(ctx, e.ID, err.Error())
-		} else {
-			db.MarkEmailSent(ctx, e.ID)
+	for i := 0; i < 20 && ctx.Err() == nil; i++ {
+		config, err := s.effectiveSMTP(ctx)
+		if err != nil {
+			return // Leave pending mail intact until SMTP becomes usable.
+		}
+		found := false
+		err = db.DB.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+			email, err := store.LockPendingEmail(ctx, tx)
+			if err != nil || email == nil {
+				return err
+			}
+			found = true
+			err = s.deliver(ctx, config, email.ToAddr, email.Subject, email.Body, false)
+			return store.RecordEmailAttempt(ctx, tx, email.ID, SMTPFailureCode(err))
+		})
+		if err != nil || !found {
+			return
 		}
 	}
 }

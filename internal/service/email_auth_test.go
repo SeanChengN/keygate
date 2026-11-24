@@ -2,6 +2,7 @@ package service
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -85,13 +86,13 @@ func TestSendOnce_AuthPickerMatrix(t *testing.T) {
 			defer srv.Close()
 
 			svc := &EmailService{
-				host:     "127.0.0.1",
-				port:     fmt.Sprintf("%d", srv.Port()),
-				username: tc.username,
-				password: "s3cret",
-				from:     "noreply@keygate.test",
-				enabled:  true,
-				logger:   slog.Default(),
+				environment: smtpConfig{host: "127.0.0.1",
+					port:     fmt.Sprintf("%d", srv.Port()),
+					username: tc.username,
+					password: "s3cret",
+					from:     "noreply@keygate.test",
+				},
+				logger: slog.Default(),
 				// Test-only: the mock server presents an ephemeral
 				// self-signed cert. Trust it without modifying the
 				// machine's CA store. Production leaves tlsConfig nil
@@ -99,7 +100,7 @@ func TestSendOnce_AuthPickerMatrix(t *testing.T) {
 				tlsConfig: &tls.Config{ServerName: "127.0.0.1", InsecureSkipVerify: true}, //nolint:gosec
 			}
 
-			err := svc.sendOnce(svc.host+":"+svc.port, "to@example.com",
+			err := svc.sendOnce(context.Background(), svc.environment, svc.environment.host+":"+svc.environment.port, "to@example.com",
 				[]byte("Subject: ok\r\n\r\nhi\r\n"))
 
 			if tc.wantErrSubstr != "" {
@@ -125,6 +126,30 @@ func TestSendOnce_AuthPickerMatrix(t *testing.T) {
 	}
 }
 
+func TestSendOnce_ImplicitTLS(t *testing.T) {
+	srv := newMockSMTP(t, mockSMTPConfig{implicitTLS: true, advertiseAuth: "LOGIN", wantUsername: "alice", wantPassword: "test-code"})
+	defer srv.Close()
+	roots := x509.NewCertPool()
+	cert, err := x509.ParseCertificate(srv.tlsCert.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots.AddCert(cert)
+	config := smtpConfig{host: "127.0.0.1", port: "465", username: "alice", password: "test-code", from: "sender@example.test"}
+	email := &EmailService{tlsConfig: &tls.Config{ServerName: config.host, RootCAs: roots, MinVersion: tls.VersionTLS12}}
+	addr := net.JoinHostPort(config.host, fmt.Sprint(srv.Port()))
+	if err := email.sendOnce(context.Background(), config, addr, "owner@example.test", []byte("Subject: implicit TLS\r\n\r\nhi")); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.AuthSucceeded() {
+		t.Fatal("mock SMTP server did not accept the login")
+	}
+	email.tlsConfig = nil
+	if err := email.sendOnce(context.Background(), config, addr, "owner@example.test", nil); SMTPFailureCode(err) != "EMAIL_TLS_FAILED" {
+		t.Fatalf("expected certificate verification failure, got %v", err)
+	}
+}
+
 // TestSendOnce_RejectsBadLoginCredentials covers the case where the
 // AUTH LOGIN mechanism is correctly selected but the credentials are
 // wrong — server must respond 535 and the client should surface a
@@ -138,17 +163,17 @@ func TestSendOnce_RejectsBadLoginCredentials(t *testing.T) {
 	defer srv.Close()
 
 	svc := &EmailService{
-		host:      "127.0.0.1",
-		port:      fmt.Sprintf("%d", srv.Port()),
-		username:  "alice",
-		password:  "WRONG-PASSWORD",
-		from:      "noreply@keygate.test",
-		enabled:   true,
+		environment: smtpConfig{host: "127.0.0.1",
+			port:     fmt.Sprintf("%d", srv.Port()),
+			username: "alice",
+			password: "WRONG-PASSWORD",
+			from:     "noreply@keygate.test",
+		},
 		logger:    slog.Default(),
 		tlsConfig: &tls.Config{ServerName: "127.0.0.1", InsecureSkipVerify: true}, //nolint:gosec
 	}
 
-	err := svc.sendOnce(svc.host+":"+svc.port, "to@example.com",
+	err := svc.sendOnce(context.Background(), svc.environment, svc.environment.host+":"+svc.environment.port, "to@example.com",
 		[]byte("Subject: ok\r\n\r\nhi\r\n"))
 	if err == nil {
 		t.Fatal("expected auth error with wrong password, got nil")
@@ -271,6 +296,7 @@ func TestParseEnvelopeAddress(t *testing.T) {
 // ─── In-process SMTP test server ────────────────────────────
 
 type mockSMTPConfig struct {
+	implicitTLS   bool
 	advertiseAuth string // space-separated mechanisms
 	wantUsername  string
 	wantPassword  string
@@ -288,6 +314,7 @@ type mockSMTP struct {
 	gotFrom       string
 	gotTo         []string
 	gotData       string
+	deliveries    []string
 }
 
 func newMockSMTP(t *testing.T, cfg mockSMTPConfig) *mockSMTP {
@@ -333,9 +360,12 @@ func (s *mockSMTP) acceptLoop(cfg mockSMTPConfig) {
 //     AUTH LOGIN → 334 base64("Username:") → 334 base64("Password:") → 235/535
 //   - MAIL FROM / RCPT TO / DATA / . / QUIT
 func (s *mockSMTP) handle(c net.Conn, cfg mockSMTPConfig) {
+	inTLS := cfg.implicitTLS
+	if inTLS {
+		c = tls.Server(c, &tls.Config{Certificates: []tls.Certificate{s.tlsCert}, MinVersion: tls.VersionTLS12})
+	}
 	fmt.Fprint(c, "220 mockSMTP ready\r\n")
 	r := bufio.NewReader(c)
-	var inTLS bool
 	for {
 		line, err := r.ReadString('\n')
 		if err != nil {
@@ -452,6 +482,7 @@ func (s *mockSMTP) handle(c net.Conn, cfg mockSMTPConfig) {
 			}
 			s.mu.Lock()
 			s.gotData = data.String()
+			s.deliveries = append(s.deliveries, s.gotData)
 			s.mu.Unlock()
 			fmt.Fprint(c, "250 OK\r\n")
 

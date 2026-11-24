@@ -106,6 +106,7 @@ type FormKey = (typeof FORM_KEYS)[number]
 export default function SettingsPage() {
   const { t, locale, setLocale } = useI18n()
   const qc = useQueryClient()
+  const { user } = useAuth()
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "settings"],
     queryFn: admin.getSettings,
@@ -113,6 +114,18 @@ export default function SettingsPage() {
 
   const [form, setForm] = useState<Record<string, string>>({})
   const [saved, setSaved] = useState(false)
+  const [tab, setTab] = useState("general")
+  const canEditSMTP = user?.role === "owner" && data?.smtp_source !== "environment"
+  const smtpDirty = FORM_KEYS.some(
+    (key) => key.startsWith("smtp_") && (form[key] || "") !== (data?.settings[key] || ""),
+  )
+  const smtpNeedsSave = data?.smtp_source === "unconfirmed" || smtpDirty
+  const smtpSourceLabel = {
+    environment: "settings.smtpSourceEnvironment",
+    dashboard: "settings.smtpSourceDashboard",
+    unconfirmed: "settings.smtpSourceUnconfirmed",
+    unconfigured: "settings.smtpSourceUnconfigured",
+  } as const
 
   useEffect(() => {
     if (data?.settings) {
@@ -120,25 +133,35 @@ export default function SettingsPage() {
     }
   }, [data])
 
+  const testEmailMut = useMutation({
+    mutationFn: admin.sendTestEmail,
+  })
   const saveMut = useMutation({
-    mutationFn: () =>
-      admin.updateSettings(Object.fromEntries(FORM_KEYS.filter((key) => key in form).map((key) => [key, form[key]]))),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["admin", "settings"] })
+    mutationFn: () => {
+      const keys = FORM_KEYS.filter(
+        (key) =>
+          key in form &&
+          (key.startsWith("smtp_")
+            ? canEditSMTP && (smtpDirty || (tab === "email" && data?.smtp_source === "unconfirmed"))
+            : form[key] !== (data?.settings[key] || "")),
+      )
+      return admin.updateSettings(Object.fromEntries(keys.map((key) => [key, form[key]])))
+    },
+    onSuccess: async () => {
+      setForm((current) => ({ ...current, smtp_password: "" }))
+      testEmailMut.reset()
+      await qc.invalidateQueries({ queryKey: ["admin", "settings"] })
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
     },
   })
 
-  const testEmailMut = useMutation({
-    mutationFn: admin.sendTestEmail,
-  })
-
   const clearSecretMut = useMutation({
     mutationFn: (key: string) => admin.clearSecretSetting(key),
-    onSuccess: () => {
+    onSuccess: async () => {
       setForm((current) => ({ ...current, smtp_password: "" }))
-      qc.invalidateQueries({ queryKey: ["admin", "settings"] })
+      testEmailMut.reset()
+      await qc.invalidateQueries({ queryKey: ["admin", "settings"] })
     },
   })
 
@@ -162,7 +185,10 @@ export default function SettingsPage() {
     queryFn: admin.getMigrations,
   })
 
-  const set = (key: FormKey, value: string) => setForm((f) => ({ ...f, [key]: value }))
+  const set = (key: FormKey, value: string) => {
+    if (key.startsWith("smtp_")) testEmailMut.reset()
+    setForm((f) => ({ ...f, [key]: value }))
+  }
 
   if (isLoading) {
     return (
@@ -179,7 +205,10 @@ export default function SettingsPage() {
           <h1 className="text-2xl font-bold tracking-tight">{t("settings.title")}</h1>
           <p className="text-muted-foreground">{t("settings.subtitle")}</p>
         </div>
-        <Button onClick={() => saveMut.mutate()} disabled={saveMut.isPending}>
+        <Button
+          onClick={() => saveMut.mutate()}
+          disabled={saveMut.isPending || testEmailMut.isPending || clearSecretMut.isPending}
+        >
           {saved ? (
             <>
               <Check className="h-4 w-4 mr-2" /> {t("settings.saved")}
@@ -192,7 +221,12 @@ export default function SettingsPage() {
         </Button>
       </div>
 
-      <Tabs defaultValue="general">
+      {saveMut.isError && (
+        <p role="alert" className="text-sm text-destructive">
+          {saveMut.error.message}
+        </p>
+      )}
+      <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="general">{t("settings.general")}</TabsTrigger>
           <TabsTrigger value="team">{t("team.title")}</TabsTrigger>
@@ -303,72 +337,94 @@ export default function SettingsPage() {
               <CardTitle className="text-base">{t("settings.email")}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="grid grid-cols-2 gap-6">
-                <div className="space-y-2">
-                  <Label>{t("settings.smtpHost")}</Label>
-                  <Input
-                    value={form.smtp_host || ""}
-                    onChange={(e) => set("smtp_host", e.target.value)}
-                    placeholder="smtp.example.com"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>{t("settings.smtpPort")}</Label>
-                  <Input
-                    value={form.smtp_port || ""}
-                    onChange={(e) => set("smtp_port", e.target.value)}
-                    placeholder="587"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>{t("settings.smtpUsername")}</Label>
-                  <Input value={form.smtp_username || ""} onChange={(e) => set("smtp_username", e.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label>{t("settings.smtpPassword")}</Label>
-                  <div className="flex items-center gap-2">
+              <p className="text-sm text-muted-foreground">{t(smtpSourceLabel[data?.smtp_source || "unconfigured"])}</p>
+              {user?.role !== "owner" && data?.smtp_source !== "environment" && (
+                <p className="text-sm text-muted-foreground">{t("settings.smtpOwnerOnly")}</p>
+              )}
+              {data?.smtp_source !== "environment" && (
+                <fieldset
+                  disabled={!canEditSMTP || saveMut.isPending || clearSecretMut.isPending || testEmailMut.isPending}
+                  className="grid grid-cols-1 gap-6 sm:grid-cols-2"
+                >
+                  <div className="space-y-2">
+                    <Label>{t("settings.smtpHost")}</Label>
                     <Input
-                      type="password"
-                      value={form.smtp_password || ""}
-                      onChange={(e) => set("smtp_password", e.target.value)}
-                      placeholder={data?.secrets_set?.smtp_password ? t("settings.smtpPasswordStored") : ""}
+                      value={form.smtp_host || ""}
+                      onChange={(e) => set("smtp_host", e.target.value)}
+                      placeholder="smtp.example.com"
                     />
-                    {data?.secrets_set?.smtp_password && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="shrink-0"
-                        disabled={clearSecretMut.isPending}
-                        onClick={() => clearSecretMut.mutate("smtp_password")}
-                      >
-                        {t("settings.smtpPasswordClear")}
-                      </Button>
-                    )}
                   </div>
-                </div>
-                <div className="space-y-2 col-span-2">
-                  <Label>{t("settings.smtpFrom")}</Label>
-                  <Input
-                    type="email"
-                    value={form.smtp_from || ""}
-                    onChange={(e) => set("smtp_from", e.target.value)}
-                    placeholder="noreply@example.com"
-                  />
-                  <p className="text-xs text-muted-foreground">{t("settings.smtpFromDesc")}</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-4 pt-2">
-                <Button variant="outline" onClick={() => testEmailMut.mutate()} disabled={testEmailMut.isPending}>
+                  <div className="space-y-2">
+                    <Label>{t("settings.smtpPort")}</Label>
+                    <Input
+                      value={form.smtp_port || ""}
+                      onChange={(e) => set("smtp_port", e.target.value)}
+                      placeholder="587"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>{t("settings.smtpUsername")}</Label>
+                    <Input value={form.smtp_username || ""} onChange={(e) => set("smtp_username", e.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>{t("settings.smtpPassword")}</Label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="password"
+                        autoComplete="new-password"
+                        value={form.smtp_password || ""}
+                        onChange={(e) => set("smtp_password", e.target.value)}
+                        placeholder={data?.secrets_set?.smtp_password ? t("settings.smtpPasswordStored") : ""}
+                      />
+                      {canEditSMTP && data?.secrets_set?.smtp_password && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="shrink-0"
+                          disabled={clearSecretMut.isPending}
+                          onClick={() => clearSecretMut.mutate("smtp_password")}
+                        >
+                          {t("settings.smtpPasswordClear")}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="space-y-2 sm:col-span-2">
+                    <Label>{t("settings.smtpFrom")}</Label>
+                    <Input
+                      type="email"
+                      value={form.smtp_from || ""}
+                      onChange={(e) => set("smtp_from", e.target.value)}
+                      placeholder="noreply@example.com"
+                    />
+                    <p className="text-xs text-muted-foreground">{t("settings.smtpFromDesc")}</p>
+                  </div>
+                </fieldset>
+              )}
+              {clearSecretMut.isError && (
+                <p role="alert" className="text-sm text-destructive">
+                  {clearSecretMut.error.message}
+                </p>
+              )}
+              <div className="flex flex-wrap items-center gap-4 pt-2">
+                <Button
+                  variant="outline"
+                  onClick={() => testEmailMut.mutate()}
+                  disabled={smtpNeedsSave || testEmailMut.isPending || saveMut.isPending || clearSecretMut.isPending}
+                >
                   <Send className="h-4 w-4 mr-2" />
                   {t("settings.testEmail")}
                 </Button>
+                {canEditSMTP && smtpNeedsSave && (
+                  <span className="text-sm text-muted-foreground">{t("settings.smtpSaveBeforeTest")}</span>
+                )}
                 {testEmailMut.isSuccess && (
                   <span className="text-sm text-emerald-600 flex items-center gap-1">
                     <Mail className="h-4 w-4" /> {t("settings.testEmailSent")}
                   </span>
                 )}
                 {testEmailMut.isError && (
-                  <span className="text-sm text-destructive">
+                  <span role="alert" className="text-sm text-destructive">
                     {testEmailMut.error instanceof Error ? testEmailMut.error.message : t("settings.testEmailFailed")}
                   </span>
                 )}

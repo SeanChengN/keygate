@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/tabloy/keygate/internal/billing"
@@ -82,10 +84,17 @@ func (s *Store) DeleteSetting(ctx context.Context, key string) error {
 }
 
 func (s *Store) SetSettings(ctx context.Context, settings map[string]string) error {
-	for key, value := range settings {
-		if err := s.SetSetting(ctx, key, value); err != nil {
-			return err
-		}
+	return WriteSettings(ctx, s.DB, settings)
+}
+
+func WriteSettings(ctx context.Context, db bun.IDB, settings map[string]string) error {
+	rows := make([]Setting, 0, len(settings))
+	for _, key := range slices.Sorted(maps.Keys(settings)) {
+		rows = append(rows, Setting{Key: key, Value: settings[key]})
 	}
-	return nil
+	if len(rows) == 0 {
+		return nil
+	}
+	_, err := db.NewInsert().Model(&rows).On("CONFLICT (key) DO UPDATE").Set("value = EXCLUDED.value").Exec(ctx)
+	return err
 }

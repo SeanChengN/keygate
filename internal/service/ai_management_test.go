@@ -58,7 +58,7 @@ func TestAIManagementPropagationProvisionAndDelete(t *testing.T) {
 	defer server.Close()
 	aead, err := crypto.NewAESGCM(make([]byte, 32))
 	check(err)
-	ai := &AIService{Store: s, AEAD: aead, Client: &JijiClient{BaseURL: server.URL, HTTP: server.Client()}, Email: &EmailService{enabled: true}}
+	ai := &AIService{Store: s, AEAD: aead, Client: &JijiClient{BaseURL: server.URL, HTTP: server.Client()}, Email: &EmailService{environment: smtpConfig{host: "smtp.example.test", from: "noreply@example.test"}}}
 	check(ai.SaveAccount(ctx, p.ID, true, &AIAccountTokens{"synthetic", "synthetic-refresh", time.Now().Add(time.Hour).Unix()}))
 	preview, err := ai.PreviewProvision(ctx, plan.ID)
 	check(err)

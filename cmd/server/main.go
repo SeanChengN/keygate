@@ -163,7 +163,7 @@ func main() {
 	// Subkeys are purpose-isolated — ciphertext from one cannot decrypt
 	// under another.
 	var releaseSigner *service.ReleaseSigningService
-	var aiAEAD, previousAIAEAD *crypto.AESGCM
+	var aiAEAD, previousAIAEAD, smtpAEAD, previousSMTPAEAD *crypto.AESGCM
 	if cfg.IsMasterEncryptionKeyConfigured() {
 		masterRaw, err := hex.DecodeString(cfg.ReleaseKeyEncryptionKey)
 		if err != nil {
@@ -171,6 +171,7 @@ func main() {
 		} else {
 			licenseAEAD := crypto.MustDeriveAEAD(masterRaw, "license-key")
 			aiAEAD = crypto.MustDeriveAEAD(masterRaw, "license-ai")
+			smtpAEAD = crypto.MustDeriveAEAD(masterRaw, "smtp-password")
 			releaseAEAD := crypto.MustDeriveAEAD(masterRaw, "release-signing-private-key")
 			var previousLicenseAEAD, previousReleaseAEAD *crypto.AESGCM
 			if cfg.ReleaseKeyEncryptionKeyPrevious != "" {
@@ -180,6 +181,7 @@ func main() {
 				}
 				previousLicenseAEAD = crypto.MustDeriveAEAD(previousRaw, "license-key")
 				previousAIAEAD = crypto.MustDeriveAEAD(previousRaw, "license-ai")
+				previousSMTPAEAD = crypto.MustDeriveAEAD(previousRaw, "smtp-password")
 				previousReleaseAEAD = crypto.MustDeriveAEAD(previousRaw, "release-signing-private-key")
 				clear(previousRaw)
 			}
@@ -207,6 +209,10 @@ func main() {
 		}
 	} else {
 		logger.Warn("license key encryption: DISABLED (RELEASE_KEY_ENCRYPTION_KEY not set)")
+	}
+
+	if err := emailSvc.ConfigureSMTPEncryption(context.Background(), smtpAEAD, previousSMTPAEAD); err != nil {
+		log.Fatalf("SMTP credential migration: %v", err)
 	}
 
 	releaseSvc := service.NewReleaseService(service.ReleaseServiceConfig{
@@ -276,6 +282,7 @@ func main() {
 
 	go webhookSvc.StartRetryLoop(ctx, webhookRetryInterval)
 	go aiSvc.Start(ctx)
+	go aiSvc.StartAccountMonitor(ctx)
 
 	go floatingSvc.StartCleanupLoop(ctx, time.Minute)
 

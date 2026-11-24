@@ -12,6 +12,15 @@ Production startup rejects missing or weak `REDIS_URL`, `OTP_PEPPER`,
 secret for another purpose. `/ready` and `/metrics` require
 `Authorization: Bearer <METRICS_TOKEN>`. `/health` exposes only liveness.
 
+When both `SMTP_HOST` and `SMTP_FROM` are set, the server uses the SMTP
+environment configuration as a whole. Otherwise a site owner can save SMTP
+settings in **Settings → Email**. Dashboard changes take effect immediately.
+Upgrade installations with existing dashboard values require an owner to
+save them once. On that save, a previously stored SMTP password is sealed
+with a purpose-derived key from `RELEASE_KEY_ENCRYPTION_KEY`.
+Port 465 uses implicit TLS. Port 587 uses STARTTLS. Authenticated SMTP
+always verifies TLS before sending credentials.
+
 Customer email OTP is unavailable when SMTP is not configured. Codes are never
 logged. Local owner/admin password login remains available without SMTP.
 Password changes, account recovery, and recovery-code rotation increment the

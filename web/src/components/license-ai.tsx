@@ -48,7 +48,9 @@ const states: Record<string, string> = {
   ready: "ai.ready",
   attention: "ai.attention",
   unconfigured: "ai.unconfigured",
-  refreshing: "ai.pending",
+  refreshing: "ai.accountRefreshing",
+  account_disabled: "ai.accountDisabled",
+  refresh_uncertain: "ai.uncertain",
   skipped: "ai.skipped",
   removed: "ai.removed",
 }
@@ -244,6 +246,7 @@ export function AIAccountDialog({ id }: { id: string }) {
     queryFn: () => licenseAI.account(id),
     enabled: open,
     staleTime: 0,
+    refetchInterval: 15_000,
     retry: false,
   })
   useEffect(() => {
@@ -270,6 +273,23 @@ export function AIAccountDialog({ id }: { id: string }) {
       void qc.resetQueries({ queryKey: ["ai-groups", id] })
     },
   })
+  const healthMessages: Record<string, TranslationKeys> = {
+    refresh_rejected: "ai.refreshRejected",
+    refresh_interrupted: "ai.refreshInterrupted",
+    refresh_result_unknown: "ai.refreshUnknown",
+    credential_unreadable: "ai.credentialInvalid",
+    access_rejected: "ai.accessRejected",
+  }
+  const alertStatuses: Record<string, TranslationKeys> = {
+    pending: "ai.alertPending",
+    waiting_smtp: "ai.alertWaitingSMTP",
+    waiting_recipients: "ai.alertWaitingRecipients",
+    sent: "ai.alertSent",
+    failed: "ai.alertFailed",
+    partial: "ai.alertPartial",
+  }
+  const healthMessage = healthMessages[query.data?.health_error || ""]
+  const alertStatus = alertStatuses[query.data?.alert_status || ""]
   const replacing = !!(access || refresh)
   const incomplete = replacing && (!access || !refresh || !expiryValid)
   return (
@@ -301,7 +321,11 @@ export function AIAccountDialog({ id }: { id: string }) {
               ? t("ai.loading")
               : query.isError
                 ? t("ai.readFailed")
-                : stateLabel(query.data?.state || "unconfigured")}
+                : stateLabel(
+                    query.data?.configured && !query.data.enabled
+                      ? "account_disabled"
+                      : query.data?.state || "unconfigured",
+                  )}
           </p>
           {query.data?.configured && !query.isError && (
             <div className="rounded-lg border bg-muted/40 p-3 text-sm space-y-1">
@@ -313,6 +337,20 @@ export function AIAccountDialog({ id }: { id: string }) {
                     timeZone: timezone || "UTC",
                   })}{" "}
                   ({timezone || "UTC"})
+                </p>
+              )}
+              <p>
+                {t("ai.lastRefresh")}{" "}
+                {query.data.last_refresh_at
+                  ? new Date(query.data.last_refresh_at).toLocaleString(locale === "zh" ? "zh-CN" : "en-US", {
+                      timeZone: timezone || "UTC",
+                    })
+                  : t("ai.noRefreshRecorded")}
+              </p>
+              {healthMessage && <p className="font-medium text-destructive">{t(healthMessage)}</p>}
+              {alertStatus && (
+                <p>
+                  {t("ai.ownerAlert")} {t(alertStatus)}
                 </p>
               )}
             </div>

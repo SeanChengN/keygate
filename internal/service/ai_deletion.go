@@ -157,6 +157,7 @@ func (s *AIService) processDeletion(ctx context.Context, id string) {
 		if d.State != "pending" && d.State != "running" && d.State != "finalizing" {
 			return nil
 		}
+		var account *aiAccount
 		fail := func(err error) error {
 			d.State = "failed"
 			d.LastErrorCode = AIErrorCode(err)
@@ -166,7 +167,7 @@ func (s *AIService) processDeletion(ctx context.Context, id string) {
 					d.State = "uncertain"
 				}
 				if pe.Status == 401 || pe.Status == 403 || pe.Status == 429 {
-					_, _ = s.Store.DB.ExecContext(ctx, "UPDATE ai_provider_accounts SET state='attention' WHERE product_id=?", d.ProductID)
+					s.noteAccountAuthFailure(ctx, d.ProductID, account)
 				}
 			}
 			if d.LastErrorCode == "AI_RESULT_UNCERTAIN" {
@@ -181,16 +182,12 @@ func (s *AIService) processDeletion(ctx context.Context, id string) {
 			}
 		}
 		if !allGone {
-			var currentRevision int64
-			if err := s.Store.DB.NewRaw("SELECT credential_revision FROM ai_provider_accounts WHERE product_id=?", d.ProductID).Scan(ctx, &currentRevision); err != nil {
-				return fail(err)
-			}
-			if d.AccountRevision != currentRevision {
-				return fail(errors.New("jiji account needs administrator attention"))
-			}
-			tokens, err := s.Account(ctx, d.ProductID)
+			account, err = s.account(ctx, d.ProductID, false)
 			if err != nil {
 				return fail(err)
+			}
+			if d.AccountRevision != account.credentialRevision {
+				return fail(errors.New("jiji account needs administrator attention"))
 			}
 			d.State = "running"
 			if err = s.Store.SaveAIDeletion(ctx, d); err != nil {
@@ -201,7 +198,7 @@ func (s *AIService) processDeletion(ctx context.Context, id string) {
 				if t.Phase == "absent" {
 					continue
 				}
-				key, err := s.Client.Get(ctx, tokens.AccessToken, t.ID)
+				key, err := s.Client.Get(ctx, account.AccessToken, t.ID)
 				if IsJijiKeyAbsent(err) && t.Verified {
 					t.Phase = "absent"
 					if err = s.Store.SaveAIDeletion(ctx, d); err != nil {
@@ -220,10 +217,10 @@ func (s *AIService) processDeletion(ctx context.Context, id string) {
 					return err
 				}
 				if key.Status != "inactive" {
-					if err = s.Client.Update(ctx, tokens.AccessToken, t.ID, map[string]any{"status": "inactive"}); err != nil {
+					if err = s.Client.Update(ctx, account.AccessToken, t.ID, map[string]any{"status": "inactive"}); err != nil {
 						return fail(err)
 					}
-					key, err = s.Client.Get(ctx, tokens.AccessToken, t.ID)
+					key, err = s.Client.Get(ctx, account.AccessToken, t.ID)
 					if err != nil {
 						return fail(err)
 					}
@@ -238,14 +235,14 @@ func (s *AIService) processDeletion(ctx context.Context, id string) {
 				if err = s.Store.SaveAIDeletion(ctx, d); err != nil {
 					return err
 				}
-				deleteErr := s.Client.Delete(ctx, tokens.AccessToken, t.ID)
+				deleteErr := s.Client.Delete(ctx, account.AccessToken, t.ID)
 				if deleteErr != nil {
 					var pe *AIProviderError
 					if errors.As(deleteErr, &pe) && (pe.Status == 401 || pe.Status == 403 || pe.Status == 429) {
 						return fail(deleteErr)
 					}
 				}
-				_, readErr := s.Client.Get(ctx, tokens.AccessToken, t.ID)
+				_, readErr := s.Client.Get(ctx, account.AccessToken, t.ID)
 				if !IsJijiKeyAbsent(readErr) {
 					if deleteErr != nil {
 						return fail(deleteErr)

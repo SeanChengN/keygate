@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/mail"
 	"strconv"
 	"strings"
 	"time"
@@ -2107,11 +2109,14 @@ var settingsSecret = map[string]bool{
 // back, so once Stripe was configured every save failed with
 // "unknown setting: stripe_webhook_secret".
 var settingsServerOwned = map[string]bool{
-	"stripe_webhook_secret":      true,
-	"stripe_webhook_endpoint_id": true,
+	"stripe_webhook_secret":       true,
+	"stripe_webhook_endpoint_id":  true,
+	service.SMTPConfirmedKey:      true,
+	service.SMTPPasswordCipherKey: true,
 }
 
 func (h *AdminHandler) GetSettings(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	settings, err := h.Store.GetSettings(c)
 	if err != nil {
 		response.Internal(c)
@@ -2137,7 +2142,10 @@ func (h *AdminHandler) GetSettings(c *gin.Context) {
 		}
 	}
 
-	response.OK(c, gin.H{"settings": out, "secrets_set": secretsSet})
+	if settings[service.SMTPPasswordCipherKey] != "" {
+		secretsSet["smtp_password"] = true
+	}
+	response.OK(c, gin.H{"settings": out, "secrets_set": secretsSet, "smtp_source": h.Email.SMTPSource(settings)})
 }
 
 func (h *AdminHandler) UpdateSettings(c *gin.Context) {
@@ -2177,8 +2185,28 @@ func (h *AdminHandler) UpdateSettings(c *gin.Context) {
 		return
 	}
 
-	if err := h.Store.SetSettings(c, writes); err != nil {
-		response.Internal(c)
+	smtpWrite := false
+	for key := range writes {
+		smtpWrite = smtpWrite || strings.HasPrefix(key, "smtp_")
+	}
+	var err error
+	if smtpWrite {
+		if !h.canManageSMTP(c) {
+			return
+		}
+		err = h.Email.SaveSMTPSettings(c, writes)
+	} else {
+		err = h.Store.SetSettings(c, writes)
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrSMTPInvalidSettings):
+			response.Err(c, http.StatusBadRequest, "EMAIL_INVALID_SETTINGS", "Check the SMTP host, port, sender and credentials.")
+		case errors.Is(err, service.ErrSMTPEncryption):
+			response.Err(c, http.StatusServiceUnavailable, "EMAIL_INVALID_SETTINGS", "SMTP password encryption is unavailable.")
+		default:
+			response.Internal(c)
+		}
 		return
 	}
 
@@ -2208,7 +2236,10 @@ func (h *AdminHandler) ClearSecretSetting(c *gin.Context) {
 		return
 	}
 
-	if err := h.Store.DeleteSetting(c, key); err != nil {
+	if !h.canManageSMTP(c) {
+		return
+	}
+	if err := h.Email.ClearSMTPPassword(c); err != nil {
 		response.Internal(c)
 		return
 	}
@@ -2220,6 +2251,19 @@ func (h *AdminHandler) ClearSecretSetting(c *gin.Context) {
 	})
 
 	response.OK(c, gin.H{"status": "cleared", "key": key})
+}
+
+func (h *AdminHandler) canManageSMTP(c *gin.Context) bool {
+	user, err := h.Store.FindUserByID(c, adminID(c))
+	if err != nil || user.Role != model.RoleOwner {
+		response.Err(c, http.StatusForbidden, "EMAIL_OWNER_REQUIRED", "Only a site owner can change SMTP settings.")
+		return false
+	}
+	if h.Email == nil {
+		response.Err(c, http.StatusServiceUnavailable, "EMAIL_NOT_CONFIGURED", "Email service is unavailable.")
+		return false
+	}
+	return true
 }
 
 // RunMeteredSync triggers one drain pass of the Stripe meter-event
@@ -2257,33 +2301,53 @@ func (h *AdminHandler) RunExpiryChecks(c *gin.Context) {
 // Body: { "to": "user@example.com" } — optional; defaults to the
 // logged-in admin's own email address.
 func (h *AdminHandler) SendTestEmail(c *gin.Context) {
-	if h.Email == nil || !h.Email.IsConfigured() {
-		response.Err(c, http.StatusServiceUnavailable, "EMAIL_NOT_CONFIGURED",
-			"SMTP is not configured on this server — set SMTP_HOST / SMTP_FROM / etc.")
+	if h.Email == nil {
+		response.Err(c, http.StatusServiceUnavailable, "EMAIL_NOT_CONFIGURED", "Save the SMTP settings before testing.")
 		return
 	}
 	var req struct {
 		To string `json:"to"`
 	}
-	_ = c.ShouldBindJSON(&req) // body optional
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		response.BadRequest(c, "invalid test email request")
+		return
+	}
 	to := strings.TrimSpace(req.To)
 	if to == "" {
-		if v, ok := c.Get("email"); ok {
-			to, _ = v.(string)
-		}
+		to = c.GetString("email")
 	}
 	if err := apperr.ValidateEmail(to); err != nil {
 		response.BadRequest(c, err.Message)
 		return
 	}
-	if err := h.Email.Send(to,
-		"Keygate test email",
-		`<p>Hello! This is a test email from Keygate.</p>`+
-			`<p>If you can read this, your SMTP setup is working.</p>`); err != nil {
-		response.Err(c, http.StatusBadGateway, "EMAIL_SEND_FAILED", err.Error())
+	recipient, err := mail.ParseAddress(to)
+	if err != nil {
+		response.BadRequest(c, "invalid email format")
 		return
 	}
-	response.OK(c, gin.H{"status": "sent", "to": to})
+	err = h.Email.SendConfigured(c.Request.Context(), recipient.Address, "Keygate test email",
+		`<html><body><p>Hello! This is a test email from Keygate.</p><p>Your SMTP setup is working.</p></body></html>`)
+	if err != nil {
+		code := service.SMTPFailureCode(err)
+		status, message := http.StatusBadGateway, "SMTP could not deliver the test email."
+		switch code {
+		case "EMAIL_NOT_CONFIGURED":
+			status, message = http.StatusServiceUnavailable, "Save the SMTP settings before testing."
+		case "EMAIL_INVALID_SETTINGS":
+			status, message = http.StatusServiceUnavailable, "Check the SMTP host, port, sender and credentials."
+		case "EMAIL_CONNECTION_FAILED":
+			message = "Could not connect to the SMTP server. Check the host, port and network access."
+		case "EMAIL_TLS_FAILED":
+			message = "Could not establish a secure SMTP connection. Check the port and TLS certificate."
+		case "EMAIL_AUTH_FAILED":
+			message = "SMTP authentication failed. Check the username and SMTP authorization code."
+		case "EMAIL_ENVELOPE_FAILED":
+			message = "The SMTP server rejected the sender or recipient address."
+		}
+		response.Err(c, status, code, message)
+		return
+	}
+	response.OK(c, gin.H{"status": "sent"})
 }
 
 // GetEmailTemplates returns all email templates (custom from DB + hardcoded defaults).

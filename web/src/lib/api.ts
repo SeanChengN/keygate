@@ -46,7 +46,10 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
       path.includes("/ai") ||
       /^\/admin\/licenses\/[^/]+(?:\/key|\/deletion)?$/.test(path) ||
       path.startsWith("/admin/licenses/batches") ||
-      path.startsWith("/admin/licenses/key-exports")
+      path.startsWith("/admin/licenses/key-exports") ||
+      (path.startsWith("/admin/settings") &&
+        typeof json?.error?.code === "string" &&
+        json.error.code.startsWith("EMAIL_"))
     ) {
       throw clientError(json?.error?.code || "REQUEST_FAILED", res.status)
     }
@@ -92,6 +95,9 @@ export type AIAccountMetadata = {
   state: string
   expires_at: number | null
   updated_at: string | null
+  last_refresh_at: string | null
+  health_error?: string
+  alert_status?: string
 }
 
 export type AILimits = {
@@ -567,7 +573,11 @@ export const admin = {
 
   // Settings
   getSettings: () =>
-    get<{ settings: Record<string, string>; secrets_set?: Record<string, boolean> }>("/admin/settings"),
+    get<{
+      settings: Record<string, string>
+      secrets_set?: Record<string, boolean>
+      smtp_source?: "environment" | "dashboard" | "unconfirmed" | "unconfigured"
+    }>("/admin/settings"),
   updateSettings: (settings: Record<string, string>) => put<{ status: string }>("/admin/settings", { settings }),
   clearSecretSetting: (key: string) => del<{ status: string; key: string }>(`/admin/settings/secrets/${key}`),
   sendTestEmail: () => post<{ status: string }>("/admin/settings/test-email"),
