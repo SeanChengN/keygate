@@ -34,6 +34,7 @@ type AIBinding struct {
 	PlanRevision    int64          `json:"plan_revision"`
 	Origin          string         `json:"origin"`
 	RemoteID        int64          `json:"remote_id"`
+	QuotaCarry      float64        `json:"-"`
 	Secret          []byte         `json:"-"`
 	Revision        int64          `json:"revision"`
 	Generation      int64          `json:"generation"`

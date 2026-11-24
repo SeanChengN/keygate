@@ -5,6 +5,22 @@ import (
 	"time"
 )
 
+func TestAddDaysKeepsFullElapsedDays(t *testing.T) {
+	start, err := time.Parse(time.RFC3339Nano, "2026-10-31T14:25:36.123-04:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := AddDays(start, 7)
+	if err != nil || got.Format(time.RFC3339) != "2026-11-07T18:25:36Z" {
+		t.Fatalf("AddDays = %v, %v", got, err)
+	}
+	for _, days := range []int{-1, 0, 366} {
+		if _, err := AddDays(start, days); err == nil {
+			t.Fatalf("accepted invalid term %d", days)
+		}
+	}
+}
+
 func TestAddPeriod(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -42,6 +42,7 @@ type VerifyToken struct {
 	ExpiresAt    int64               `json:"exp"`
 	ValidUntil   *int64              `json:"vld,omitempty"`
 	GraceDays    int                 `json:"grc"`
+	BillingDays  int                 `json:"bdy,omitempty"`
 	Nonce        string              `json:"nce"`           // unique per-issuance to prevent replay
 	Fingerprint  string              `json:"fpr,omitempty"` // v3: SHA256(device public key); legacy: identifier+product_id
 }

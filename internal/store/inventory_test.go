@@ -74,7 +74,7 @@ func TestInventoryAtomicExportActivationAndDelete(t *testing.T) {
 		}
 	}
 	must(s.RunMigrations("../../db/migrations"))
-	p := &model.Product{Name: "Inventory synthetic", Slug: "inventory-" + NewID(), Type: "desktop"}
+	p := &model.Product{Name: "Inventory synthetic", Slug: "inventory-" + NewID(), Type: "desktop", InventoryEnabled: true, PackageAIEnabled: true}
 	must(s.CreateProduct(ctx, p))
 	plan := &model.Plan{ProductID: p.ID, Name: "Stock", Slug: NewID(), LicenseType: "subscription", LicenseModel: "standard", BillingInterval: "month", MaxActivations: 1, GraceDays: 0, Active: true}
 	must(s.CreatePlan(ctx, plan))

@@ -16,9 +16,23 @@ info:
     For **server-to-server admin access** (CI/CD, billing backends,
     automation scripts) Keygate provides API keys with the `admin`
     scope. Pass them as `Authorization: Bearer kg_live_…`. They are
-    equivalent to a logged-in admin session and can call any
-    `/admin/*` endpoint. Mint them in the admin dashboard under
-    **API Keys**.
+    subject to their product scope. Product feature switches and
+    inventory/TXT delivery require an administrator session. Mint API
+    keys in the admin dashboard under **API Keys**.
+
+    ## Product features and day plans
+
+    `PUT /admin/products/{id}` accepts optional boolean
+    `inventory_enabled` and `package_ai_enabled` fields. Disabling a
+    feature stops new inventory or new AI bindings. Issued inventory and
+    existing AI bindings remain usable according to their terms.
+
+    Plans with `license_type: subscription` and `billing_interval: day`
+    require integer `billing_days` in 1–365 and zero grace days. Issue
+    these licenses with `POST /admin/licenses/batches`. The optional
+    `with_ai` flag controls AI delivery for that batch. Validity starts
+    at first device activation. A v3 signed license token may include
+    optional integer `bdy` for its issued day term.
 
     ## Idempotency
 

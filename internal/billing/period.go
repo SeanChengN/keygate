@@ -49,6 +49,14 @@ func ParseExpiry(value string, location *time.Location) (time.Time, error) {
 	return EndOfDay(instant, location), nil
 }
 
+// AddDays grants full 24-hour periods, independent of billing timezone or DST.
+func AddDays(value time.Time, days int) (time.Time, error) {
+	if days < 1 || days > 365 {
+		return time.Time{}, fmt.Errorf("billing days must be between 1 and 365")
+	}
+	return value.UTC().Truncate(time.Second).Add(time.Duration(days) * 24 * time.Hour), nil
+}
+
 // AddPeriod advances by one calendar month or year in location and returns
 // 23:59:59 on the target date. Missing target days clamp to month end.
 func AddPeriod(value time.Time, interval string, location *time.Location) (time.Time, error) {

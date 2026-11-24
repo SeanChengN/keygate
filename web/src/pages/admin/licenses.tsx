@@ -453,7 +453,7 @@ function CreateLicenseDialog({
     queryFn: () => admin.listPlans(productId),
     enabled: !!productId,
   })
-  const plans = plansData?.plans || []
+  const plans = (plansData?.plans || []).filter((p) => p.billing_interval !== "day")
   const selectedPlan = plans.find((plan) => plan.id === planId)
 
   // Show a hint right under the product dropdown so admin knows what
@@ -854,7 +854,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
               <TabsTrigger value="info">{t("licenses.info")}</TabsTrigger>
               <TabsTrigger value="usage">{t("licenses.usage")}</TabsTrigger>
               <TabsTrigger value="seats">{t("licenses.seats")}</TabsTrigger>
-              {lic.product?.slug === "movaura-studio" && lic.product.type === "desktop" && (
+              {(lic.ai_enrolled || (lic.product?.package_ai_enabled && lic.product.type !== "saas")) && (
                 <TabsTrigger value="ai">{t("ai.title")}</TabsTrigger>
               )}
             </TabsList>
@@ -932,7 +932,9 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                     <p className="text-muted-foreground">{t("licenses.billingInterval")}</p>
                     <p className="mt-1">
                       {lic.plan?.license_type === "subscription"
-                        ? t(`plans.${lic.plan.billing_interval === "year" ? "yearly" : "monthly"}`)
+                        ? lic.activation_days
+                          ? t("plans.termDays", { days: lic.activation_days })
+                          : t(`plans.${lic.plan.billing_interval === "year" ? "yearly" : "monthly"}`)
                         : t("licenses.notApplicable")}
                     </p>
                   </div>
@@ -944,10 +946,16 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                     <p className="text-muted-foreground">{t("licenses.commercialValidUntil")}</p>
                     {editingValidUntil === null ? (
                       <div className="flex items-center gap-1 mt-1">
-                        <p>{lic.valid_until ? formatDate(lic.valid_until) : t("licenses.perpetual")}</p>
+                        <p>
+                          {lic.valid_until
+                            ? lic.activation_days
+                              ? new Date(lic.valid_until).toLocaleString(locale)
+                              : formatDate(lic.valid_until)
+                            : t("licenses.perpetual")}
+                        </p>
                         {/* Stripe owns the expiry for subscription licenses —
                             editing it here would be overwritten on renewal. */}
-                        {lic.payment_provider !== "stripe" && !lic.stripe_subscription_id && (
+                        {!lic.activation_days && lic.payment_provider !== "stripe" && !lic.stripe_subscription_id && (
                           <Button
                             variant="ghost"
                             size="icon"
@@ -1045,6 +1053,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                 {/* Actions */}
                 <div className="flex gap-2 flex-wrap">
                   {lic.plan?.license_type === "subscription" &&
+                    !lic.activation_days &&
                     !lic.payment_provider &&
                     !lic.stripe_subscription_id &&
                     ["active", "past_due", "expired", "canceled"].includes(lic.status) && (
@@ -1202,9 +1211,11 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                       </AlertDialogContent>
                     </AlertDialog>
                   )}
-                  <Button variant="outline" size="sm" onClick={() => setChangingPlan(true)}>
-                    {t("licenses.changePlan")}
-                  </Button>
+                  {!lic.activation_days && (
+                    <Button variant="outline" size="sm" onClick={() => setChangingPlan(true)}>
+                      {t("licenses.changePlan")}
+                    </Button>
+                  )}
                 </div>
 
                 {/* Activations — hidden for SaaS products (which don't
@@ -1285,9 +1296,14 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
               </div>
             </TabsContent>
 
-            {lic.product?.slug === "movaura-studio" && lic.product.type === "desktop" && (
+            {(lic.ai_enrolled || (lic.product?.package_ai_enabled && lic.product.type !== "saas")) && (
               <TabsContent value="ai">
-                <LicenseAICard id={id} productId={lic.product_id} />
+                <LicenseAICard
+                  id={id}
+                  productId={lic.product_id}
+                  dayPlan={!!lic.activation_days}
+                  canProvision={!!lic.product?.package_ai_enabled}
+                />
               </TabsContent>
             )}
             <TabsContent value="usage">
@@ -1566,7 +1582,7 @@ function ChangePlanDialog({
     queryKey: ["admin", "plans", productId],
     queryFn: () => admin.listPlans(productId),
   })
-  const plans = plansData?.plans || []
+  const plans = (plansData?.plans || []).filter((p) => p.billing_interval !== "day")
 
   const changeMut = useMutation({
     mutationFn: () => admin.changeLicensePlan(licenseId, { plan_id: planId }),

@@ -148,11 +148,21 @@ export type LicenseAI = {
   }
   jobs?: LicenseAIJob[]
 }
-export type InventoryBatch = { id: string; product_id: string; plan_id: string; quantity: number; created_at: string }
+export type InventoryBatch = {
+  id: string
+  product_id: string
+  plan_id: string
+  quantity: number
+  with_ai: boolean
+  created_at: string
+}
 export type InventoryItem = { id: string; status: string; first_export_id?: string }
 export type LicenseExport = { id: string; license_ids: string[]; created_at: string }
 export const inventory = {
-  create: (body: { product_id: string; plan_id: string; quantity: number; notes: string }, key: string) =>
+  create: (
+    body: { product_id: string; plan_id: string; quantity: number; notes: string; with_ai: boolean },
+    key: string,
+  ) =>
     request<InventoryBatch>("/admin/licenses/batches", {
       method: "POST",
       headers: { "Idempotency-Key": key },
@@ -328,7 +338,8 @@ export const admin = {
 
   createEntitlement: (data: { plan_id: string; feature: string; value_type: string; value: string }) =>
     post<Entitlement>("/admin/entitlements", data),
-  updateEntitlement: (id: string, data: Partial<Entitlement>) => put<Entitlement>(`/admin/entitlements/${id}`, data),
+  updateEntitlement: (id: string, data: Partial<Entitlement> & { expected_value?: string }) =>
+    put<Entitlement>(`/admin/entitlements/${id}`, data),
   deleteEntitlement: (id: string) => del(`/admin/entitlements/${id}`),
 
   listLicenses: (params?: {
@@ -711,6 +722,9 @@ export interface Product {
   minimum_supported_version?: string
   minimum_supported_message?: string
   require_signing: boolean
+  inventory_enabled?: boolean
+  package_ai_enabled?: boolean
+  has_ai_account?: boolean
   created_at: string
 }
 
@@ -722,6 +736,7 @@ export interface Plan {
   checkout_id: string
   license_type: string
   billing_interval?: string
+  billing_days?: number
   max_activations: number
   license_model?: string
   floating_timeout?: number
@@ -748,6 +763,9 @@ export interface Entitlement {
 
 export interface License {
   issuance_batch_id?: string
+  activation_days?: number
+  inventory_ai?: boolean
+  ai_enrolled?: boolean
   first_export_id?: string
   id: string
   product_id: string

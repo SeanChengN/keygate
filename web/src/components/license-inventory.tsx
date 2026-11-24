@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useI18n } from "@/i18n"
 import { errorMessage } from "@/i18n/errors"
-import { admin, inventory, type Plan } from "@/lib/api"
+import { admin, inventory, licenseAI, type Plan } from "@/lib/api"
 import { formatDate } from "@/lib/utils"
 
 export function InventoryManager({ selected, clear }: { selected: string[]; clear: () => void }) {
@@ -20,11 +20,12 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
   const [plan, setPlan] = useState("")
   const [quantity, setQuantity] = useState(10)
   const [notes, setNotes] = useState("")
+  const [withAI, setWithAI] = useState<boolean | null>(null)
   const [batch, setBatch] = useState("")
   const [exportIDs, setExportIDs] = useState<string[] | null>(null)
   const createKey = useRef(crypto.randomUUID())
   const exportKey = useRef(crypto.randomUUID())
-  const [downloadError, setDownloadError] = useState<Error | null>(null)
+  const [failedDownload, setFailedDownload] = useState<{ id: string; error: unknown } | null>(null)
   const products = useQuery({ queryKey: ["admin", "products"], queryFn: () => admin.listProducts() })
   const plans = useQuery({
     queryKey: ["admin", "plans", product],
@@ -46,8 +47,42 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
     void qc.invalidateQueries({ queryKey: ["inventory-exports"] })
     void qc.invalidateQueries({ queryKey: ["admin", "licenses"] })
   }
+  const productRows = products.data?.products ?? []
+  const planRows = plans.data?.plans ?? []
+  const batchRows = batches.data?.batches ?? []
+  const licenses = current.data?.licenses ?? []
+  const exportRows = exports.data?.exports ?? []
+  const availableProducts = productRows.filter((value) => value.inventory_enabled && value.type !== "saas")
+  const exportableLicenses = licenses.filter((value) => value.status === "pending_activation" && !value.first_export_id)
+  const selectedProduct = availableProducts.find((value) => value.id === product)
+  const canAttachAI = !!selectedProduct?.package_ai_enabled
+  const aiAccount = useQuery({
+    queryKey: ["ai-account", product],
+    queryFn: () => licenseAI.account(product),
+    enabled: open && canAttachAI,
+    retry: false,
+  })
+  const aiPlan = useQuery({
+    queryKey: ["ai-plan", plan],
+    queryFn: () => licenseAI.plan(plan),
+    enabled: open && canAttachAI && !!plan,
+    retry: false,
+  })
+  const failedQueries = [products, plans, batches, current, exports, aiAccount, aiPlan].filter(
+    (query) => query.isEnabled && query.isError,
+  )
+  const queryErrors = [...new Set(failedQueries.map((query) => errorMessage(query.error, locale)))]
+  const aiReady = !!(
+    aiAccount.data?.configured &&
+    aiAccount.data.enabled &&
+    aiAccount.data.state === "ready" &&
+    (aiPlan.data?.group_id ?? 0) > 0
+  )
+  const checkingAI = canAttachAI && !!plan && (aiAccount.isPending || aiPlan.isPending)
+  const attachAI = canAttachAI && (withAI ?? aiReady)
   const create = useMutation({
-    mutationFn: () => inventory.create({ product_id: product, plan_id: plan, quantity, notes }, createKey.current),
+    mutationFn: () =>
+      inventory.create({ product_id: product, plan_id: plan, quantity, notes, with_ai: attachAI }, createKey.current),
     onSuccess: (value) => {
       setBatch(value.id)
       createKey.current = crypto.randomUUID()
@@ -55,11 +90,11 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
     },
   })
   const download = async (id: string) => {
-    setDownloadError(null)
+    setFailedDownload(null)
     try {
       await inventory.download(id)
     } catch (error) {
-      setDownloadError(error as Error)
+      setFailedDownload({ id, error })
     }
   }
   const exportMut = useMutation({
@@ -84,12 +119,19 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
   const planReason = (value: Plan) => {
     if (!value.active) return t("inventory.planInactive")
     if (value.license_type !== "subscription") return t("inventory.planSubscription")
-    if (!["month", "year"].includes(value.billing_interval || "")) return t("inventory.planInterval")
+    if (!["day", "month", "year"].includes(value.billing_interval || "")) return t("inventory.planInterval")
     if (value.grace_days !== 0) return t("inventory.planGrace", { days: value.grace_days })
     return ""
   }
-  const selectedPlan = plans.data?.plans.find((value) => value.id === plan)
-  const invalidPlan = !selectedPlan || !!planReason(selectedPlan)
+  const selectedPlan = planRows.find((value) => value.id === plan)
+  const invalidPlan =
+    !selectedProduct ||
+    !selectedPlan ||
+    !!planReason(selectedPlan) ||
+    products.isError ||
+    plans.isError ||
+    checkingAI ||
+    (attachAI && !aiReady)
   return (
     <>
       <Button variant="outline" onClick={() => setOpen(true)}>
@@ -106,6 +148,9 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
             <DialogTitle>{t("inventory.title")}</DialogTitle>
             <DialogDescription>{t("inventory.note")}</DialogDescription>
           </DialogHeader>
+          {products.isSuccess && !availableProducts.length && (
+            <p className="text-sm text-muted-foreground">{t("inventory.enableProductFirst")}</p>
+          )}
           <form
             className="grid gap-4 sm:grid-cols-2"
             onSubmit={(event) => {
@@ -120,6 +165,7 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
                 onValueChange={(value) => {
                   setProduct(value)
                   setPlan("")
+                  setWithAI(null)
                   change()
                 }}
               >
@@ -127,13 +173,11 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {products.data?.products
-                    .filter((value) => value.slug === "movaura-studio" && value.type === "desktop")
-                    .map((value) => (
-                      <SelectItem key={value.id} value={value.id}>
-                        {value.name}
-                      </SelectItem>
-                    ))}
+                  {availableProducts.map((value) => (
+                    <SelectItem key={value.id} value={value.id}>
+                      {value.name}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </Label>
@@ -143,6 +187,7 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
                 value={plan}
                 onValueChange={(value) => {
                   setPlan(value)
+                  setWithAI(null)
                   change()
                 }}
               >
@@ -150,15 +195,38 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {plans.data?.plans.map((value) => (
+                  {planRows.map((value) => (
                     <SelectItem key={value.id} value={value.id} disabled={!!planReason(value)}>
                       {value.name}
+                      {value.billing_interval === "day" &&
+                        ` · ${t("plans.termDays", { days: value.billing_days ?? 0 })}`}
                       {planReason(value) ? ` — ${planReason(value)}` : ""}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </Label>
+            {canAttachAI && (
+              <div className="space-y-1 sm:col-span-2">
+                <Label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={attachAI}
+                    disabled={create.isPending || (!aiReady && !attachAI)}
+                    onChange={(event) => {
+                      setWithAI(event.target.checked)
+                      change()
+                    }}
+                  />
+                  {t("inventory.withAI")}
+                </Label>
+                {!aiReady && (
+                  <p className="text-xs text-muted-foreground">
+                    {t(checkingAI ? "common.loading" : "inventory.planRequirements")}
+                  </p>
+                )}
+              </div>
+            )}
             <Label className="grid gap-2">
               {t("inventory.quantity")}
               <Input
@@ -200,19 +268,29 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
           <Button variant="link" asChild>
             <Link to="/admin/plans">{t("inventory.managePlans")}</Link>
           </Button>
-          {(products.error || plans.error) && (
-            <p role="alert" className="text-destructive">
-              {errorMessage(products.error || plans.error, locale)}
-            </p>
+          {failedQueries.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <p role="alert" className="text-destructive">
+                {queryErrors.join(" · ")}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={failedQueries.some((query) => query.isFetching)}
+                onClick={() => void Promise.all(failedQueries.map((query) => query.refetch()))}
+              >
+                {t("inventory.retry")}
+              </Button>
+            </div>
           )}
           <Label className="grid gap-2">
             {t("inventory.batches")}
-            <Select value={batch} onValueChange={setBatch}>
+            <Select value={batch} onValueChange={setBatch} disabled={!batchRows.length}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {batches.data?.batches.map((value) => (
+                {batchRows.map((value) => (
                   <SelectItem key={value.id} value={value.id}>
                     {formatDate(value.created_at)} · {value.quantity} · {value.id.slice(0, 8)}
                   </SelectItem>
@@ -220,25 +298,18 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
               </SelectContent>
             </Select>
           </Label>
+          {batches.isSuccess && !batchRows.length && (
+            <p className="text-sm text-muted-foreground">{t("inventory.noBatches")}</p>
+          )}
           {current.data && (
             <div className="space-y-2">
               <p className="text-sm text-muted-foreground">
-                {current.data.licenses.length} · {t("inventory.unstarted")}
+                {licenses.length} · {t("inventory.unstarted")}
               </p>
               <Button
                 variant="outline"
-                disabled={
-                  !current.data.licenses.some(
-                    (value) => value.status === "pending_activation" && !value.first_export_id,
-                  )
-                }
-                onClick={() =>
-                  chooseExport(
-                    current.data.licenses
-                      .filter((value) => value.status === "pending_activation" && !value.first_export_id)
-                      .map((value) => value.id),
-                  )
-                }
+                disabled={!exportableLicenses.length}
+                onClick={() => chooseExport(exportableLicenses.map((value) => value.id))}
               >
                 {t("inventory.exportBatch")}
               </Button>
@@ -258,13 +329,20 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
               </Button>
             </div>
           )}
-          {(exportMut.error || current.error || batches.error || exports.error || downloadError) && (
+          {exportMut.error && (
             <p role="alert" className="text-destructive">
-              {errorMessage(
-                exportMut.error || current.error || batches.error || exports.error || downloadError,
-                locale,
-              )}
+              {errorMessage(exportMut.error, locale)}
             </p>
+          )}
+          {failedDownload && (
+            <div className="flex flex-wrap items-center gap-2">
+              <p role="alert" className="text-destructive">
+                {errorMessage(failedDownload.error, locale)}
+              </p>
+              <Button variant="outline" size="sm" onClick={() => void download(failedDownload.id)}>
+                {t("inventory.retryDownload")}
+              </Button>
+            </div>
           )}
           <h3 className="font-medium">{t("inventory.history")}</h3>
           <p className="text-sm text-muted-foreground">{t("inventory.exportNote")}</p>
@@ -277,7 +355,14 @@ export function InventoryManager({ selected, clear }: { selected: string[]; clea
               </TableRow>
             </TableHeader>
             <TableBody>
-              {exports.data?.exports.map((value) => (
+              {exports.isSuccess && !exportRows.length && (
+                <TableRow>
+                  <TableCell colSpan={3} className="text-center text-muted-foreground">
+                    {t("inventory.noExports")}
+                  </TableCell>
+                </TableRow>
+              )}
+              {exportRows.map((value) => (
                 <TableRow key={value.id}>
                   <TableCell>{formatDate(value.created_at)}</TableCell>
                   <TableCell>{value.license_ids.length}</TableCell>

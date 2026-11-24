@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -50,13 +51,14 @@ func (h *AdminHandler) CreateInventoryBatch(c *gin.Context) {
 		PlanID    string `json:"plan_id"`
 		Quantity  int    `json:"quantity"`
 		Notes     string `json:"notes"`
+		WithAI    *bool  `json:"with_ai"`
 	}
 	key := c.GetHeader("Idempotency-Key")
 	if c.ShouldBindJSON(&req) != nil || !store.ValidIdempotencyKey(key) || req.Quantity < 1 || req.Quantity > 500 || len(req.Notes) > 2000 {
 		response.Err(c, 400, "INVENTORY_REQUEST_INVALID", "需要产品、方案、1–500 张数量及 Idempotency-Key")
 		return
 	}
-	if !h.aiReady(c) || !h.aiProduct(c, req.ProductID) {
+	if !requireKeyProductScope(c, req.ProductID) {
 		return
 	}
 	p, err := h.Store.FindPlanByID(c, req.PlanID)
@@ -64,25 +66,49 @@ func (h *AdminHandler) CreateInventoryBatch(c *gin.Context) {
 		response.Err(c, 400, "INVENTORY_PLAN_MISMATCH", "方案与产品不匹配")
 		return
 	}
-	cfg, err := h.AI.ProvisionConfig(c, p.ID)
-	if err != nil {
-		aiError(c, err, 400)
-		return
-	}
-	metadata, err := h.AI.AccountMetadata(c, req.ProductID)
-	if err != nil {
-		aiError(c, err, 500)
-		return
-	}
-	if !metadata.Configured {
-		aiError(c, errors.New("jiji account is not configured"), 409)
-		return
-	}
-	if !metadata.Enabled || metadata.State != "ready" {
-		aiError(c, errors.New("jiji account needs administrator attention"), 409)
-		return
-	}
 	b := &store.InventoryBatch{ProductID: req.ProductID, PlanID: req.PlanID, ActorID: adminID(c), RequestKey: key, Quantity: req.Quantity, Notes: req.Notes}
+	prior, err := h.Store.InventoryBatchByRequest(c, b.ActorID, key)
+	if err == nil {
+		if prior.ProductID != b.ProductID || prior.PlanID != b.PlanID || prior.Quantity != b.Quantity || prior.Notes != b.Notes || req.WithAI != nil && prior.WithAI != *req.WithAI {
+			inventoryError(c, store.ErrInventoryConflict)
+			return
+		}
+		response.Created(c, prior)
+		return
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		response.Internal(c)
+		return
+	}
+	product, err := h.Store.FindProductByID(c, req.ProductID)
+	if err != nil {
+		response.NotFound(c, "product not found")
+		return
+	}
+	withAI := product.PackageAIEnabled
+	if req.WithAI != nil {
+		withAI = *req.WithAI
+	}
+	var cfg *store.AIPlanRecord
+	if withAI {
+		if !h.aiReady(c) || !h.aiProduct(c, req.ProductID) {
+			return
+		}
+		cfg, err = h.AI.ProvisionConfig(c, p.ID)
+		if err != nil {
+			aiError(c, err, 400)
+			return
+		}
+		metadata, err := h.AI.AccountMetadata(c, req.ProductID)
+		if err != nil {
+			aiError(c, err, 500)
+			return
+		}
+		if !metadata.Configured || !metadata.Enabled || metadata.State != "ready" {
+			aiError(c, errors.New("jiji account needs administrator attention"), 409)
+			return
+		}
+	}
 	if err = h.Store.CreateInventory(c, b, cfg); err != nil {
 		inventoryError(c, err)
 		return
@@ -102,7 +128,7 @@ func (h *AdminHandler) GetInventoryBatch(c *gin.Context) {
 	if !requireKeyProductScope(c, b.ProductID) {
 		return
 	}
-	var rows []inventoryLicenseMetadata
+	rows := make([]inventoryLicenseMetadata, 0)
 	if err = h.Store.DB.NewSelect().Table("licenses").Column("id", "status", "first_export_id", "created_at").Where("issuance_batch_id=?", b.ID).Order("id").Scan(c, &rows); err != nil {
 		response.Internal(c)
 		return
@@ -114,7 +140,7 @@ func (h *AdminHandler) ListInventoryBatches(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
-	var rows []store.InventoryBatch
+	rows := make([]store.InventoryBatch, 0)
 	q := h.Store.DB.NewSelect().Model(&rows).OrderExpr("created_at DESC").Limit(50)
 	if id := c.Query("product_id"); id != "" {
 		if !requireKeyProductScope(c, id) {
@@ -158,7 +184,7 @@ func (h *AdminHandler) ListKeyExports(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
-	var rows []store.KeyExport
+	rows := make([]store.KeyExport, 0)
 	if err := h.Store.DB.NewSelect().Model(&rows).OrderExpr("created_at DESC").Limit(50).Scan(c); err != nil {
 		response.Internal(c)
 		return

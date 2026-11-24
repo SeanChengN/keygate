@@ -47,8 +47,8 @@ func (s *AIService) ProvisionConfig(ctx context.Context, id string) (*store.AIPl
 	if err != nil {
 		return nil, err
 	}
-	if product.Slug != "movaura-studio" || product.Type != "desktop" || p.LicenseType != "subscription" || p.GraceDays != 0 {
-		return nil, errors.New("AI requires a Movaura subscription with zero grace")
+	if !product.PackageAIEnabled || !model.ProductSupports(product.Type, model.CapActivations) || p.LicenseType != "subscription" || p.GraceDays != 0 {
+		return nil, errors.New("AI requires an enabled product with device activation and a subscription with zero grace")
 	}
 	record, err := s.Store.AIPlan(ctx, id)
 	if err != nil {
@@ -140,6 +140,13 @@ func (s *AIService) Provision(ctx context.Context, planID, actor, key string, re
 			return nil
 		} else if !errors.Is(e, sql.ErrNoRows) {
 			return e
+		}
+		var product model.Product
+		if e := tx.NewSelect().Model(&product).Where("id=?", plan.ProductID).For("SHARE").Scan(ctx); e != nil {
+			return e
+		}
+		if !product.PackageAIEnabled || !model.ProductSupports(product.Type, model.CapActivations) {
+			return ErrAIConfigChanged
 		}
 		var fresh int64
 		if e := tx.NewRaw("SELECT revision FROM ai_plan_settings WHERE plan_id=?", planID).Scan(ctx, &fresh); e != nil {

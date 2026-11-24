@@ -179,7 +179,9 @@ function Limits({
   onChange,
   savedGroupId,
   groups,
+  dayPlan = false,
 }: {
+  dayPlan?: boolean
   value: AILimits
   onChange: (value: AILimits) => void
   savedGroupId: number
@@ -196,7 +198,7 @@ function Limits({
       />
       {Object.entries(labels).map(([key, label]) => (
         <Label key={key} className="grid gap-2">
-          {t(label as TranslationKeys)}
+          {t(key === "quota" && dayPlan ? "ai.termQuota" : (label as TranslationKeys))}
           <Input
             type="number"
             min="0"
@@ -447,7 +449,17 @@ export function AIAccountDialog({ id }: { id: string }) {
   )
 }
 
-export function AIPlanDialog({ id, productId }: { id: string; productId: string }) {
+export function AIPlanDialog({
+  id,
+  productId,
+  dayPlan,
+  canProvision,
+}: {
+  id: string
+  productId: string
+  dayPlan: boolean
+  canProvision: boolean
+}) {
   const { t } = useI18n()
   const qc = useQueryClient()
   const stateLabel = useAIState()
@@ -539,7 +551,8 @@ export function AIPlanDialog({ id, productId }: { id: string; productId: string 
             <Label className="flex gap-2">
               <input
                 type="checkbox"
-                checked={value.enabled}
+                checked={value.enabled && canProvision}
+                disabled={!canProvision || dayPlan}
                 onChange={(e) => {
                   setDirty(true)
                   setValue({ ...value, enabled: e.target.checked })
@@ -547,7 +560,9 @@ export function AIPlanDialog({ id, productId }: { id: string; productId: string 
               />
               {t("ai.autoProvision")}
             </Label>
+            {!canProvision && <p className="text-xs text-muted-foreground">{t("products.aiDeliveryUnavailable")}</p>}
             <Limits
+              dayPlan={dayPlan}
               value={value}
               groups={groups}
               savedGroupId={savedGroupId}
@@ -568,7 +583,7 @@ export function AIPlanDialog({ id, productId }: { id: string; productId: string 
           </p>
           <Button
             variant="outline"
-            disabled={dirty || previewMutation.isPending}
+            disabled={!canProvision || dirty || previewMutation.isPending}
             onClick={() => previewMutation.mutate()}
           >
             {t("ai.previewBatch")}
@@ -576,7 +591,7 @@ export function AIPlanDialog({ id, productId }: { id: string; productId: string 
           {preview && (
             <div className="space-y-3 rounded-lg border p-4">
               <p>
-                {t("ai.batchWarning", {
+                {t(dayPlan ? "ai.batchWarningDay" : "ai.batchWarning", {
                   count: preview.items.filter((i) => i.eligible).length,
                   quota: preview.config.quota === 0 ? t("ai.unlimited") : preview.config.quota,
                 })}
@@ -791,7 +806,17 @@ function AISyncHistory({ jobs }: { jobs: LicenseAIJob[] }) {
   )
 }
 
-export function LicenseAICard({ id, productId }: { id: string; productId: string }) {
+export function LicenseAICard({
+  id,
+  productId,
+  dayPlan,
+  canProvision,
+}: {
+  id: string
+  productId: string
+  dayPlan: boolean
+  canProvision: boolean
+}) {
   const { t, locale } = useI18n()
   const stateLabel = useAIState()
   const [dirty, setDirty] = useState(false)
@@ -891,7 +916,7 @@ export function LicenseAICard({ id, productId }: { id: string; productId: string
         ) : !query.data?.enrolled ? (
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">{t("ai.unbound")}</p>
-            <Button disabled={provision.isPending} onClick={() => setConfirm("provision")}>
+            <Button disabled={provision.isPending || !canProvision} onClick={() => setConfirm("provision")}>
               {t("ai.provision")}
             </Button>
           </div>
@@ -982,6 +1007,7 @@ export function LicenseAICard({ id, productId }: { id: string; productId: string
                   }}
                 >
                   <Limits
+                    dayPlan={dayPlan}
                     value={value}
                     groups={groups}
                     savedGroupId={savedGroupId}
@@ -1008,7 +1034,7 @@ export function LicenseAICard({ id, productId }: { id: string; productId: string
               <AlertDialogTitle>{confirm === "provision" ? t("ai.provision") : actions[confirm]}</AlertDialogTitle>
               <AlertDialogDescription>
                 {confirm === "provision"
-                  ? t("ai.provisionWarning")
+                  ? t(dayPlan ? "ai.provisionWarningDay" : "ai.provisionWarning")
                   : confirm === "rotate"
                     ? t("ai.rotateWarning")
                     : confirm === "reset_quota"

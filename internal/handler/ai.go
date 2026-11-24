@@ -24,16 +24,37 @@ func (h *AdminHandler) aiReady(c *gin.Context) bool {
 	return true
 }
 func (h *AdminHandler) aiProduct(c *gin.Context, id string) bool {
+	return h.aiProductAccess(c, id, false)
+}
+
+func (h *AdminHandler) aiProductAccess(c *gin.Context, id string, allowExistingAccount bool) bool {
 	p, err := h.Store.FindProductByID(c, id)
-	if err != nil || p.Slug != "movaura-studio" || p.Type != "desktop" {
-		response.Err(c, 400, "AI_PRODUCT_INVALID", "AI provisioning is restricted to the Movaura Studio desktop product")
+	if err != nil {
+		response.NotFound(c, "product not found")
 		return false
 	}
-	return requireKeyProductScope(c, id)
+	if !requireKeyProductScope(c, id) {
+		return false
+	}
+	if !p.PackageAIEnabled {
+		if allowExistingAccount {
+			existing, err := h.Store.DB.NewSelect().Table("ai_provider_accounts").Where("product_id=?", id).Exists(c)
+			if err != nil {
+				response.Internal(c)
+				return false
+			}
+			if existing {
+				return true
+			}
+		}
+		response.Err(c, 409, "AI_PRODUCT_DISABLED", "该产品未开启套餐 AI")
+		return false
+	}
+	return true
 }
 
 func (h *AdminHandler) GetAIAccount(c *gin.Context) {
-	if !h.aiReady(c) || !h.aiProduct(c, c.Param("id")) {
+	if !h.aiReady(c) || !h.aiProductAccess(c, c.Param("id"), true) {
 		return
 	}
 	metadata, err := h.AI.AccountMetadata(c, c.Param("id"))
@@ -46,7 +67,7 @@ func (h *AdminHandler) GetAIAccount(c *gin.Context) {
 
 func (h *AdminHandler) GetAIGroupChoices(c *gin.Context) {
 	productID := c.Param("id")
-	if !h.aiReady(c) || !h.aiProduct(c, productID) {
+	if !h.aiReady(c) || !h.aiProductAccess(c, productID, true) {
 		return
 	}
 	account, err := h.AI.Account(c, productID)
@@ -62,7 +83,7 @@ func (h *AdminHandler) GetAIGroupChoices(c *gin.Context) {
 	response.OK(c, gin.H{"groups": groups})
 }
 func (h *AdminHandler) PutAIAccount(c *gin.Context) {
-	if !h.aiReady(c) || !h.aiProduct(c, c.Param("id")) {
+	if !h.aiReady(c) || !h.aiProductAccess(c, c.Param("id"), true) {
 		return
 	}
 	var req struct {
@@ -169,6 +190,15 @@ func (h *AdminHandler) PutAIPlan(c *gin.Context) {
 			return
 		}
 		if req.Enabled {
+			product, lookupErr := h.Store.FindProductByID(c, p.ProductID)
+			if lookupErr != nil {
+				response.Internal(c)
+				return
+			}
+			if !model.ProductSupports(product.Type, model.CapActivations) {
+				response.Err(c, 400, "AI_DELIVERY_UNAVAILABLE", "该产品缺少设备签名授权入口")
+				return
+			}
 			if _, err = h.AI.Account(c, p.ProductID); err != nil {
 				aiError(c, err, 400)
 				return

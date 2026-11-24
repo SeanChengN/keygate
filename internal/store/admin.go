@@ -24,7 +24,8 @@ var (
 
 func (s *Store) ListProducts(ctx context.Context, search string) ([]*model.Product, error) {
 	var out []*model.Product
-	q := s.DB.NewSelect().Model(&out).OrderExpr("created_at DESC")
+	q := s.DB.NewSelect().Model(&out).ColumnExpr(`product.*,
+		EXISTS (SELECT 1 FROM ai_provider_accounts WHERE product_id=product.id) AS has_ai_account`).OrderExpr("created_at DESC")
 	if search != "" {
 		q = q.Where("name ILIKE ? OR slug ILIKE ?", "%"+search+"%", "%"+search+"%")
 	}
@@ -45,9 +46,48 @@ func (s *Store) CreateProduct(ctx context.Context, p *model.Product) error {
 	return err
 }
 
-func (s *Store) UpdateProduct(ctx context.Context, p *model.Product) error {
-	_, err := s.DB.NewUpdate().Model(p).WherePK().Exec(ctx)
-	return err
+var ErrProductInventoryType = errors.New("inventory requires a product with device activation")
+
+func (s *Store) UpdateProduct(ctx context.Context, p *model.Product, inventory, ai *bool, actor string) error {
+	return s.DB.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		var current model.Product
+		if err := tx.NewSelect().Model(&current).Where("id=?", p.ID).For("UPDATE").Scan(ctx); err != nil {
+			return err
+		}
+		p.InventoryEnabled, p.PackageAIEnabled = current.InventoryEnabled, current.PackageAIEnabled
+		if inventory != nil {
+			p.InventoryEnabled = *inventory
+		}
+		if ai != nil {
+			p.PackageAIEnabled = *ai
+		}
+		if !model.ProductSupports(p.Type, model.CapActivations) {
+			if p.InventoryEnabled {
+				return ErrProductInventoryType
+			}
+			if current.Type != p.Type {
+				exists, err := tx.NewSelect().Model((*model.License)(nil)).
+					Where("product_id=? AND issuance_batch_id <> '' AND status NOT IN ('revoked','expired')", p.ID).Exists(ctx)
+				if err != nil {
+					return err
+				}
+				if exists {
+					return ErrProductInventoryType
+				}
+			}
+		}
+		if _, err := tx.NewUpdate().Model(p).WherePK().Exec(ctx); err != nil {
+			return err
+		}
+		if current.InventoryEnabled == p.InventoryEnabled && current.PackageAIEnabled == p.PackageAIEnabled {
+			return nil
+		}
+		_, err := tx.NewInsert().Model(&model.AuditLog{
+			ID: newID(), Entity: "product", EntityID: p.ID, ActorID: actor, ActorType: "admin", Action: "features_updated",
+			Changes: map[string]any{"inventory_enabled": p.InventoryEnabled, "package_ai_enabled": p.PackageAIEnabled},
+		}).Exec(ctx)
+		return err
+	})
 }
 
 func (s *Store) DeleteProduct(ctx context.Context, id string) error {
@@ -76,6 +116,19 @@ func (s *Store) CreatePlan(ctx context.Context, p *model.Plan) error {
 	}
 	if p.CheckoutID == "" {
 		p.CheckoutID = shortID()
+	}
+	if p.BillingInterval == "day" {
+		return s.DB.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+			var product model.Product
+			if err := tx.NewSelect().Model(&product).Where("id=?", p.ProductID).For("SHARE").Scan(ctx); err != nil {
+				return err
+			}
+			if !product.InventoryEnabled || !model.ProductSupports(product.Type, model.CapActivations) {
+				return ErrProductInventoryType
+			}
+			_, err := tx.NewInsert().Model(p).Exec(ctx)
+			return err
+		})
 	}
 	_, err := s.DB.NewInsert().Model(p).Exec(ctx)
 	return err
@@ -173,6 +226,18 @@ func (s *Store) CreateEntitlement(ctx context.Context, e *model.Entitlement) err
 
 func (s *Store) UpdateEntitlement(ctx context.Context, e *model.Entitlement) error {
 	_, err := s.DB.NewUpdate().Model(e).WherePK().Exec(ctx)
+	return err
+}
+
+func (s *Store) UpdateEntitlementIfCurrent(ctx context.Context, e *model.Entitlement, expected string) error {
+	result, err := s.DB.NewUpdate().Model(e).WherePK().Where("value = ?", expected).Exec(ctx)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err == nil && count == 0 {
+		return sql.ErrNoRows
+	}
 	return err
 }
 

@@ -111,11 +111,11 @@ func (s *Store) issueAI(ctx context.Context, tx bun.IDB, l *model.License) error
 		return nil
 	}
 	var product model.Product
-	if err := tx.NewSelect().Model(&product).Where("id = ?", l.ProductID).Scan(ctx); err != nil {
+	if err := tx.NewSelect().Model(&product).Where("id = ?", l.ProductID).For("SHARE").Scan(ctx); err != nil {
 		return err
 	}
-	if product.Slug != "movaura-studio" || product.Type != "desktop" {
-		return errors.New("AI provisioning product mismatch")
+	if !product.PackageAIEnabled || !model.ProductSupports(product.Type, model.CapActivations) {
+		return nil
 	}
 	zone, err := s.BillingLocation(ctx)
 	if err != nil {

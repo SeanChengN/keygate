@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -290,7 +291,7 @@ func TestAIProvisioningIntegration(t *testing.T) {
 		}
 	}
 	suffix := store.NewID()
-	p := &model.Product{Name: "Synthetic AI", Slug: "movaura-studio", Type: "desktop"}
+	p := &model.Product{Name: "Synthetic AI", Slug: "movaura-studio", Type: "desktop", InventoryEnabled: true, PackageAIEnabled: true}
 	if s.DB.NewSelect().Model(p).Where("slug = 'movaura-studio'").Scan(ctx) != nil {
 		check(s.CreateProduct(ctx, p))
 	}
@@ -533,9 +534,10 @@ func TestAIProvisioningIntegration(t *testing.T) {
 	foreignPlan := &model.Plan{ProductID: foreign.ID, Name: "Other", Slug: "other", LicenseType: "subscription", BillingInterval: "month", LicenseModel: "standard"}
 	check(s.CreatePlan(ctx, foreignPlan))
 	check(s.SaveAIPlan(ctx, foreignPlan.ID, &store.AIPlanRecord{Config: cfg, ProfileBinding: binding}))
-	e = s.CreateLicense(ctx, &model.License{ProductID: foreign.ID, PlanID: foreignPlan.ID, Email: "synthetic@example.test", LicenseKey: store.NewID(), Status: model.StatusActive, ValidUntil: &end})
-	if e == nil {
-		t.Fatal("cross-product provisioning accepted")
+	plainLicense := &model.License{ProductID: foreign.ID, PlanID: foreignPlan.ID, Email: "synthetic@example.test", LicenseKey: store.NewID(), Status: model.StatusActive, ValidUntil: &end}
+	check(s.CreateLicense(ctx, plainLicense))
+	if _, e := s.AIBinding(ctx, plainLicense.ID); !errors.Is(e, sql.ErrNoRows) {
+		t.Fatalf("disabled product provisioned AI: %v", e)
 	}
 	// Account refresh is serialized, rotation persisted, and failure stops retries.
 	check(ai.SaveAccount(ctx, p.ID, true, &AIAccountTokens{"old", "old-refresh", time.Now().Add(time.Minute).Unix()}))

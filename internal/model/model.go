@@ -138,13 +138,20 @@ func ProductSupports(t, capability string) bool {
 	return false
 }
 
+func IsAIProfile(feature string) bool {
+	return feature == "studio.ai_profile" || feature == "license.ai_profile"
+}
+
 type Product struct {
 	bun.BaseModel `bun:"table:products"`
 
-	ID   string `bun:",pk" json:"id"`
-	Name string `bun:",notnull" json:"name"`
-	Slug string `bun:",notnull,unique" json:"slug"`
-	Type string `bun:",notnull" json:"type"`
+	ID               string `bun:",pk" json:"id"`
+	Name             string `bun:",notnull" json:"name"`
+	Slug             string `bun:",notnull,unique" json:"slug"`
+	Type             string `bun:",notnull" json:"type"`
+	InventoryEnabled bool   `json:"inventory_enabled"`
+	PackageAIEnabled bool   `json:"package_ai_enabled"`
+	HasAIAccount     bool   `bun:",scanonly" json:"has_ai_account,omitempty"`
 
 	// MinimumSupportedVersion: optional semver floor. When non-empty,
 	// auto-update feeds embed this so clients can refuse to keep
@@ -247,6 +254,7 @@ type Plan struct {
 	CheckoutID      string `bun:",unique,notnull" json:"checkout_id"`
 	LicenseType     string `bun:",notnull" json:"license_type"`
 	BillingInterval string `json:"billing_interval,omitempty"`
+	BillingDays     int    `json:"billing_days,omitempty"`
 	// IMPORTANT: do NOT add bun `default:N` annotations here. Bun
 	// translates a zero Go value on a `default:N` field into SQL
 	// DEFAULT — which means a deliberate `0` from the handler ends up
@@ -335,6 +343,8 @@ type License struct {
 
 	IssuanceBatchID    string     `json:"issuance_batch_id,omitempty"`
 	ActivationInterval string     `json:"activation_interval,omitempty"`
+	ActivationDays     int        `json:"activation_days,omitempty"`
+	InventoryAI        bool       `json:"inventory_ai"`
 	ActivationTimezone string     `json:"activation_timezone,omitempty"`
 	FirstExportID      string     `json:"first_export_id,omitempty"`
 	FirstExportedAt    *time.Time `json:"first_exported_at,omitempty"`

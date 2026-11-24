@@ -31,11 +31,12 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useI18n } from "@/i18n"
+import { errorMessage } from "@/i18n/errors"
 import { admin, type Product } from "@/lib/api"
 import { formatDate } from "@/lib/utils"
 
 export default function ProductsPage() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const qc = useQueryClient()
   const [search, setSearch] = useState("")
   const { data, isLoading } = useQuery({
@@ -56,8 +57,9 @@ export default function ProductsPage() {
   })
   const updateMut = useMutation({
     mutationFn: ({ id, ...data }: Partial<Product> & { id: string }) => admin.updateProduct(id, data),
+    onError: (error) => showToast(errorMessage(error, locale), "error"),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["admin", "products"] })
+      qc.invalidateQueries({ queryKey: ["admin"] })
       setEditing(null)
     },
   })
@@ -141,8 +143,13 @@ export default function ProductsPage() {
                       </DataTableCell>
                       <DataTableCell>
                         <div className="flex gap-1">
-                          {p.slug === "movaura-studio" && p.type === "desktop" && <AIAccountDialog id={p.id} />}
-                          <Button variant="ghost" size="icon" onClick={() => setEditing(p)}>
+                          {(p.package_ai_enabled || p.has_ai_account) && <AIAccountDialog id={p.id} />}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label={t("products.editTitle")}
+                            onClick={() => setEditing(p)}
+                          >
                             <Pencil className="h-4 w-4" />
                           </Button>
                           <Button variant="ghost" size="icon" onClick={() => setDeleting(p)}>
@@ -225,7 +232,13 @@ function ProductDialog({
   open: boolean
   onClose: () => void
   product?: Product
-  onSubmit: (data: { name: string; slug: string; type: string }) => void
+  onSubmit: (data: {
+    name: string
+    slug: string
+    type: string
+    inventory_enabled?: boolean
+    package_ai_enabled?: boolean
+  }) => void
   loading: boolean
   title: string
 }) {
@@ -234,14 +247,22 @@ function ProductDialog({
   const [slug, setSlug] = useState(product?.slug || "")
   const [type, setType] = useState(product?.type || "desktop")
 
+  const [stock, setStock] = useState(!!product?.inventory_enabled)
+  const [ai, setAI] = useState(!!product?.package_ai_enabled)
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    onSubmit({ name, slug, type })
+    onSubmit({
+      name,
+      slug,
+      type,
+      ...(product ? { inventory_enabled: type !== "saas" && stock, package_ai_enabled: ai } : {}),
+    })
   }
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{t("products.formDesc")}</DialogDescription>
@@ -297,6 +318,34 @@ function ProductDialog({
               />
             </div>
           </div>
+          {product && (
+            <fieldset className="space-y-3 rounded-md border p-4">
+              <legend className="px-1 text-sm font-medium">{t("products.features")}</legend>
+              <div className="space-y-1">
+                <Label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={type !== "saas" && stock}
+                    disabled={type === "saas"}
+                    onChange={(event) => setStock(event.target.checked)}
+                  />
+                  {t("inventory.title")}
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  {t(type === "saas" ? "products.stockUnavailable" : "products.stockHint")}
+                </p>
+              </div>
+              <div className="space-y-1">
+                <Label className="flex items-center gap-2">
+                  <input type="checkbox" checked={ai} onChange={(event) => setAI(event.target.checked)} />
+                  {t("products.packageAI")}
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  {t(type === "saas" ? "products.aiDeliveryUnavailable" : "products.aiHint")}
+                </p>
+              </div>
+            </fieldset>
+          )}
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={onClose}>
               {t("common.cancel")}

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Copy, Package, Pencil, Plus, Trash2 } from "lucide-react"
 import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
+import { AIModelTiers } from "@/components/ai-model-tiers"
 import { EntityId } from "@/components/entity-id"
 import { AIPlanDialog } from "@/components/license-ai"
 import { showToast } from "@/components/toast"
@@ -149,6 +150,7 @@ export default function PlansPage() {
                     <DataTableHead>{t("common.name")}</DataTableHead>
                     <DataTableHead>{t("common.product")}</DataTableHead>
                     <DataTableHead>{t("plans.licenseType")}</DataTableHead>
+                    <DataTableHead>{t("plans.billingInterval")}</DataTableHead>
                     <DataTableHead>{t("plans.maxActivations")}</DataTableHead>
                     <DataTableHead>{t("plans.maxSeats")}</DataTableHead>
                     <DataTableHead>{t("common.status")}</DataTableHead>
@@ -157,7 +159,7 @@ export default function PlansPage() {
                   </DataTableRow>
                 </DataTableHeader>
                 <DataTableBody>
-                  {plans.length === 0 && <DataTableEmpty colSpan={8} message={t("plans.empty")} />}
+                  {plans.length === 0 && <DataTableEmpty colSpan={9} message={t("plans.empty")} />}
                   {paginatedItems.map((p) => {
                     const prodType = products.find((pr) => pr.id === p.product_id)?.type
                     const supportsActivations = prodType === "desktop" || prodType === "hybrid"
@@ -173,6 +175,15 @@ export default function PlansPage() {
                         </DataTableCell>
                         <DataTableCell>
                           <Badge variant="secondary">{t(`plans.${p.license_type}` as "plans.subscription")}</Badge>
+                        </DataTableCell>
+                        <DataTableCell>
+                          {p.license_type === "subscription" && p.billing_interval === "day"
+                            ? t("plans.termDays", { days: p.billing_days ?? 0 })
+                            : p.license_type === "subscription" && p.billing_interval === "month"
+                              ? t("plans.monthly")
+                              : p.license_type === "subscription" && p.billing_interval === "year"
+                                ? t("plans.yearly")
+                                : "—"}
                         </DataTableCell>
                         <DataTableCell>
                           {supportsActivations ? (
@@ -202,9 +213,15 @@ export default function PlansPage() {
                         </DataTableCell>
                         <DataTableCell>
                           <div className="flex gap-1">
-                            {products.find((pr) => pr.id === p.product_id)?.slug === "movaura-studio" &&
-                              prodType === "desktop" && <AIPlanDialog id={p.id} productId={p.product_id} />}
-                            {p.checkout_id && (
+                            {products.find((pr) => pr.id === p.product_id)?.package_ai_enabled && (
+                              <AIPlanDialog
+                                id={p.id}
+                                productId={p.product_id}
+                                dayPlan={p.billing_interval === "day"}
+                                canProvision={prodType !== "saas"}
+                              />
+                            )}
+                            {p.checkout_id && p.billing_interval !== "day" && (
                               <Button
                                 variant="ghost"
                                 size="icon"
@@ -305,7 +322,7 @@ function PlanDialog({
   open: boolean
   onClose: () => void
   plan?: Plan
-  products: { id: string; name: string; type?: string }[]
+  products: { id: string; name: string; type?: string; inventory_enabled?: boolean }[]
   onSubmit: (data: Partial<Plan>) => void
   loading: boolean
   title: string
@@ -317,6 +334,7 @@ function PlanDialog({
     slug: plan?.slug || "",
     license_type: plan?.license_type || "subscription",
     billing_interval: plan?.billing_interval || "month",
+    billing_days: plan?.billing_days ?? 7,
     max_activations: plan?.max_activations ?? 3,
     max_seats: plan?.max_seats ?? 1,
     trial_days: plan?.trial_days ?? 0,
@@ -333,6 +351,8 @@ function PlanDialog({
   // Mirrors backend model.ProductSupports — DO NOT diverge or admins
   // will see fields the server then rejects on submit.
   const selectedProduct = products.find((p) => p.id === form.product_id)
+  const dayPlan = form.license_type === "subscription" && form.billing_interval === "day"
+  const trialPlan = form.license_type === "trial"
   const productType = selectedProduct?.type || "hybrid"
   const supports = {
     activations: productType === "desktop" || productType === "hybrid",
@@ -344,9 +364,18 @@ function PlanDialog({
   // max_activations=3 for a saas product just because the form
   // pre-filled it before the product was selected).
   const handleSubmit = () => {
-    const payload: Partial<Plan> & Record<string, unknown> = { ...form }
+    const { billing_days, trial_days, ...values } = form
+    const payload: Partial<Plan> = values
     if (form.license_type !== "subscription") {
       payload.billing_interval = ""
+    }
+    if (trialPlan) {
+      payload.trial_days = trial_days
+    }
+    if (dayPlan) {
+      payload.billing_days = billing_days
+      payload.grace_days = 0
+      payload.stripe_price_id = ""
     }
     if (!supports.activations) {
       payload.max_activations = 0
@@ -377,7 +406,21 @@ function PlanDialog({
             <div className="space-y-2 col-span-2">
               <Label>{t("common.product")}</Label>
 
-              <Select value={form.product_id} onValueChange={(v) => set("product_id", v)}>
+              <Select
+                disabled={!!plan}
+                value={form.product_id}
+                onValueChange={(v) =>
+                  setForm((current) => ({
+                    ...current,
+                    product_id: v,
+                    billing_interval:
+                      current.billing_interval === "day" &&
+                      !products.find((product) => product.id === v)?.inventory_enabled
+                        ? "month"
+                        : current.billing_interval,
+                  }))
+                }
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -419,6 +462,7 @@ function PlanDialog({
             <div className="space-y-2">
               <Label>{t("plans.licenseType")}</Label>
               <Select
+                disabled={plan?.billing_interval === "day"}
                 value={form.license_type}
                 onValueChange={(v) =>
                   setForm((current) => ({
@@ -442,15 +486,38 @@ function PlanDialog({
             {form.license_type === "subscription" && (
               <div className="space-y-2">
                 <Label>{t("plans.billingInterval")}</Label>
-                <Select value={form.billing_interval || "month"} onValueChange={(v) => set("billing_interval", v)}>
+                <Select
+                  disabled={plan?.billing_interval === "day"}
+                  value={form.billing_interval || "month"}
+                  onValueChange={(v) => set("billing_interval", v)}
+                >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
+                    {(plan?.billing_interval === "day" || (!plan && selectedProduct?.inventory_enabled)) && (
+                      <SelectItem value="day">{t("plans.daily")}</SelectItem>
+                    )}
                     <SelectItem value="month">{t("plans.monthly")}</SelectItem>
                     <SelectItem value="year">{t("plans.yearly")}</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+            )}
+            {dayPlan && (
+              <div className="space-y-2">
+                <Label htmlFor="plan-billing-days">{t("plans.billingDays")}</Label>
+                <Input
+                  id="plan-billing-days"
+                  type="number"
+                  min={1}
+                  max={365}
+                  step={1}
+                  required
+                  value={form.billing_days}
+                  onChange={(e) => set("billing_days", Number(e.target.value))}
+                />
+                <p className="text-xs text-muted-foreground">{t("plans.dayTermHint")}</p>
               </div>
             )}
             {supports.activations && (
@@ -500,21 +567,27 @@ function PlanDialog({
                 />
               </div>
             )}
-            <div className="space-y-2">
-              <Label>{t("plans.trialDays")}</Label>
-              <Input
-                type="number"
-                min={0}
-                value={form.trial_days}
-                onChange={(e) => set("trial_days", Number(e.target.value))}
-              />
-            </div>
+            {trialPlan && (
+              <div className="space-y-2">
+                <Label htmlFor="plan-trial-days">{t("plans.trialDays")}</Label>
+                <Input
+                  id="plan-trial-days"
+                  type="number"
+                  min={0}
+                  max={365}
+                  value={form.trial_days}
+                  onChange={(e) => set("trial_days", Number(e.target.value))}
+                />
+                <p className="text-xs text-muted-foreground">{t("plans.trialDaysHint")}</p>
+              </div>
+            )}
             <div className="space-y-2">
               <Label>{t("plans.graceDays")}</Label>
               <Input
                 type="number"
                 min={0}
-                value={form.grace_days}
+                disabled={dayPlan}
+                value={dayPlan ? 0 : form.grace_days}
                 onChange={(e) => set("grace_days", Number(e.target.value))}
               />
             </div>
@@ -531,7 +604,8 @@ function PlanDialog({
             <div className="space-y-2">
               <Label>{t("plans.stripePriceId")}</Label>
               <Input
-                value={form.stripe_price_id}
+                disabled={dayPlan}
+                value={dayPlan ? "" : form.stripe_price_id}
                 onChange={(e) => set("stripe_price_id", e.target.value)}
                 placeholder="price_..."
               />
@@ -640,9 +714,13 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
             <div key={e.id} className="flex items-center justify-between bg-muted/50 rounded px-3 py-2 text-sm">
               <div>
                 <span className="font-medium">{e.feature}</span>
-                <span className="text-muted-foreground ml-2">
-                  ({e.value_type}: {e.value})
-                </span>
+                {["studio.ai_profile", "license.ai_profile"].includes(e.feature) ? (
+                  <AIModelTiers entitlement={e} />
+                ) : (
+                  <span className="text-muted-foreground ml-2">
+                    ({e.value_type}: {e.value})
+                  </span>
+                )}
                 {e.quota_period && (
                   <span className="text-muted-foreground ml-1">
                     / {e.quota_period}

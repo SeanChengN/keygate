@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"strings"
 	"time"
@@ -66,30 +67,37 @@ func AIProfileBinding(p *model.Plan) (string, error) {
 	if p == nil {
 		return "", errors.New("AI requires a plan")
 	}
+	var selected *model.Entitlement
 	for _, e := range p.Entitlements {
-		if e.Feature == "studio.ai_profile" {
-			var v struct {
-				ProviderID string `json:"provider_id"`
-				BaseURL    string `json:"base_url"`
-				Protocol   string `json:"protocol"`
+		if model.IsAIProfile(e.Feature) {
+			if selected != nil {
+				return "", errors.New("only one AI profile per plan is supported")
 			}
-			if json.Unmarshal([]byte(e.Value), &v) != nil {
-				return "", errors.New("a signed jiji studio.ai_profile is required")
-			}
-			u, parseErr := url.Parse(v.BaseURL)
-			if parseErr != nil || v.ProviderID != "jiji" || v.Protocol != "openai" || u.Scheme != "https" || u.Host != "api-slb.jiji.cc" || strings.TrimRight(u.Path, "/") != "/v1" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
-				return "", errors.New("a signed jiji studio.ai_profile is required")
-			}
-			parts := []string{}
-			for _, part := range []string{v.ProviderID, strings.TrimRight(v.BaseURL, "/"), v.Protocol} {
-				raw, _ := json.Marshal(part)
-				parts = append(parts, string(raw))
-			}
-			sum := sha256.Sum256([]byte("[" + strings.Join(parts, ", ") + "]"))
-			return hex.EncodeToString(sum[:]), nil
+			selected = e
 		}
 	}
-	return "", errors.New("studio.ai_profile is missing")
+	if selected != nil {
+		var v struct {
+			ProviderID string `json:"provider_id"`
+			BaseURL    string `json:"base_url"`
+			Protocol   string `json:"protocol"`
+		}
+		if json.Unmarshal([]byte(selected.Value), &v) != nil {
+			return "", errors.New("a signed jiji AI profile is required")
+		}
+		u, parseErr := url.Parse(v.BaseURL)
+		if parseErr != nil || v.ProviderID != "jiji" || v.Protocol != "openai" || u.Scheme != "https" || u.Host != "api-slb.jiji.cc" || strings.TrimRight(u.Path, "/") != "/v1" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+			return "", errors.New("a signed jiji AI profile is required")
+		}
+		parts := []string{}
+		for _, part := range []string{v.ProviderID, strings.TrimRight(v.BaseURL, "/"), v.Protocol} {
+			raw, _ := json.Marshal(part)
+			parts = append(parts, string(raw))
+		}
+		sum := sha256.Sum256([]byte("[" + strings.Join(parts, ", ") + "]"))
+		return hex.EncodeToString(sum[:]), nil
+	}
+	return "", errors.New("AI profile is missing")
 }
 
 // MonthCycle preserves the original day rather than drifting after February.
@@ -205,7 +213,7 @@ func (s *AIService) Tick(ctx context.Context) {
 		if aiUsable(lic, time.Now()) && b.RemoteID == 0 {
 			_ = store.EnqueueAI(ctx, s.Store.DB, b.LicenseID, "sync", "issue-ready")
 		}
-		if aiUsable(lic, time.Now()) && b.RemoteID > 0 {
+		if lic.ActivationDays == 0 && aiUsable(lic, time.Now()) && b.RemoteID > 0 {
 			cycle, _, err := MonthCycle(b.Anchor, time.Now(), b.Timezone)
 			if err == nil && cycle != "0" {
 				_ = store.EnqueueAI(ctx, s.Store.DB, b.LicenseID, "monthly", "month:"+cycle)
@@ -332,13 +340,13 @@ func (s *AIService) process(ctx context.Context, job *model.AIJob) {
 	})
 }
 
-func (s *AIService) checkpoint(ctx context.Context, b *model.AIBinding, j *model.AIJob, phase string) error {
+func (s *AIService) checkpoint(ctx context.Context, b *model.AIBinding, j *model.AIJob, phase string, billingDays int) error {
 	b.UpdatedAt = time.Now()
 	err := s.Store.DB.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if _, err := tx.NewUpdate().Model(b).WherePK().Exec(ctx); err != nil {
 			return err
 		}
-		if phase == "published" {
+		if phase == "published" && billingDays == 0 {
 			cycle, _, err := MonthCycle(b.Anchor, time.Now(), b.Timezone)
 			if err != nil {
 				return err
@@ -351,6 +359,8 @@ func (s *AIService) checkpoint(ctx context.Context, b *model.AIBinding, j *model
 					return err
 				}
 			}
+		}
+		if phase == "published" {
 			if b.Revision == 1 && b.Origin == "issuance" && s.Email != nil && s.Email.IsConfigured() {
 				lic, err := s.Store.FindLicenseByID(ctx, b.LicenseID)
 				if err != nil {
@@ -410,7 +420,7 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 			if err != nil {
 				return err
 			}
-			if err := s.checkpoint(ctx, b, j, "candidate_disabled_pending"); err != nil {
+			if err := s.checkpoint(ctx, b, j, "candidate_disabled_pending", l.ActivationDays); err != nil {
 				return err
 			}
 			_, err = s.syncRemote(ctx, token, key.ID, l, b, false)
@@ -427,7 +437,7 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 	if b.RemoteID == 0 || j.Action == "rotate" && j.Phase != "published" {
 		if j.Action == "rotate" && j.Phase == "" {
 			b.Generation++
-			if err := s.checkpoint(ctx, b, j, "rotation_started"); err != nil {
+			if err := s.checkpoint(ctx, b, j, "rotation_started", l.ActivationDays); err != nil {
 				return err
 			}
 		}
@@ -441,7 +451,7 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 				if j.Phase == "create_sent" {
 					return errors.New("create result unknown; manual resolution required")
 				}
-				if err := s.checkpoint(ctx, b, j, "create_sent"); err != nil {
+				if err := s.checkpoint(ctx, b, j, "create_sent", l.ActivationDays); err != nil {
 					return err
 				}
 				key, err = s.Client.Create(ctx, token, name, b.Config)
@@ -458,13 +468,17 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 			}
 			b.CandidateID = key.ID
 			b.CandidateSecret = raw
-			if err := s.checkpoint(ctx, b, j, "candidate_saved"); err != nil {
+			if err := s.checkpoint(ctx, b, j, "candidate_saved", l.ActivationDays); err != nil {
 				return err
 			}
 		}
-		candidateView, err := s.syncRemote(ctx, token, b.CandidateID, l, b, usable)
-		if err != nil {
-			return err
+		published := *b
+		if l.ActivationDays == 0 {
+			view, err := s.syncRemote(ctx, token, b.CandidateID, l, b, usable)
+			if err != nil {
+				return err
+			}
+			published.RemoteView = view
 		}
 		if b.RemoteID > 0 && b.RemoteID != b.CandidateID {
 			if err := s.Client.Update(ctx, token, b.RemoteID, map[string]any{"status": "inactive"}); err != nil {
@@ -474,18 +488,26 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 			if err != nil {
 				return err
 			}
-			if old.Status != "inactive" {
+			if old.ID != b.RemoteID || old.Status != "inactive" {
 				return errors.New("old key disable readback failed")
 			}
+			if l.ActivationDays > 0 {
+				published.QuotaCarry += old.QuotaUsed
+			}
 		}
-		published := *b
+		if l.ActivationDays > 0 {
+			view, err := s.syncRemote(ctx, token, b.CandidateID, l, &published, usable)
+			if err != nil {
+				return err
+			}
+			published.RemoteView = view
+		}
 		published.RemoteID = b.CandidateID
-		published.RemoteView = candidateView
 		published.Secret = b.CandidateSecret
 		published.CandidateID = 0
 		published.CandidateSecret = nil
 		published.Revision++
-		if err := s.checkpoint(ctx, &published, j, "published"); err != nil {
+		if err := s.checkpoint(ctx, &published, j, "published", l.ActivationDays); err != nil {
 			return err
 		}
 		*b = published
@@ -498,6 +520,9 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 			return nil
 		}
 		if j.Action == "monthly" {
+			if l.ActivationDays > 0 {
+				return nil
+			}
 			cycle, _, err := MonthCycle(b.Anchor, time.Now(), b.Timezone)
 			if err != nil {
 				return err
@@ -514,8 +539,8 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 			if before.ID != b.RemoteID {
 				return errors.New("provider identity mismatch; manual resolution required")
 			}
-			b.RemoteView = before.Public()
-			if err := s.checkpoint(ctx, b, j, "reset_sent"); err != nil {
+			b.RemoteView = aiUsageView(before, b)
+			if err := s.checkpoint(ctx, b, j, "reset_sent", l.ActivationDays); err != nil {
 				return err
 			}
 			field := "reset_quota"
@@ -534,7 +559,15 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 				field == "reset_rate_limit_usage" && (after.QuotaUsed != before.QuotaUsed || after.Usage5H != 0 || after.Usage1D != 0 || after.Usage7D != 0) {
 				return errors.New("reset readback mismatch; manual resolution required")
 			}
-			if err := s.checkpoint(ctx, b, j, "reset_done"); err != nil {
+			if j.Action == "reset_quota" {
+				b.QuotaCarry = 0
+			}
+			if err := s.checkpoint(ctx, b, j, "reset_done", l.ActivationDays); err != nil {
+				return err
+			}
+		}
+		if l.ActivationDays > 0 && j.Action == "reset_quota" {
+			if _, err := s.syncRemote(ctx, token, b.RemoteID, l, b, usable); err != nil {
 				return err
 			}
 		}
@@ -546,8 +579,14 @@ func (s *AIService) execute(ctx context.Context, l *model.License, b *model.AIBi
 	if key.ID != b.RemoteID {
 		return errors.New("provider identity mismatch; manual resolution required")
 	}
-	b.RemoteView = key.Public()
+	b.RemoteView = aiUsageView(key, b)
 	return nil
+}
+
+func aiUsageView(key *JijiKey, b *model.AIBinding) map[string]any {
+	view := key.Public()
+	view["quota_used"] = key.QuotaUsed + b.QuotaCarry
+	return view
 }
 
 func (s *AIService) syncRemote(ctx context.Context, token string, id int64, l *model.License, b *model.AIBinding, usable bool) (map[string]any, error) {
@@ -571,7 +610,15 @@ func (s *AIService) syncRemote(ctx context.Context, token string, id int64, l *m
 	if usable {
 		status = "active"
 	}
-	v := map[string]any{"status": status, "quota": b.Config.Quota, "group_id": b.Config.GroupID, "rate_limit_5h": b.Config.Rate5H, "rate_limit_1d": b.Config.Rate1D, "rate_limit_7d": b.Config.Rate7D}
+	quota := b.Config.Quota
+	if quota > 0 && b.QuotaCarry > 0 {
+		// Zero means unlimited upstream. Keep an exhausted replacement inactive.
+		quota = math.Round((quota-b.QuotaCarry)*1e8) / 1e8
+		if quota <= 0 {
+			quota, status = 0.00000001, "inactive"
+		}
+	}
+	v := map[string]any{"status": status, "quota": quota, "group_id": b.Config.GroupID, "rate_limit_5h": b.Config.Rate5H, "rate_limit_1d": b.Config.Rate1D, "rate_limit_7d": b.Config.Rate7D}
 	if l.ValidUntil != nil {
 		v["expires_at"] = l.ValidUntil.UTC().Truncate(time.Second).Format(time.RFC3339)
 	}
@@ -585,10 +632,10 @@ func (s *AIService) syncRemote(ctx context.Context, token string, id int64, l *m
 	if before.Key != k.Key || k.QuotaUsed < before.QuotaUsed {
 		return nil, errors.New("provider changed key or cleared historical usage; manual resolution required")
 	}
-	if k.ID != id || k.Status != status || k.GroupID != b.Config.GroupID || k.Quota != b.Config.Quota || k.Rate5H != b.Config.Rate5H || k.Rate1D != b.Config.Rate1D || k.Rate7D != b.Config.Rate7D || l.ValidUntil != nil && (k.ExpiresAt == nil || k.ExpiresAt.Unix() != l.ValidUntil.Unix()) {
+	if k.ID != id || k.Status != status || k.GroupID != b.Config.GroupID || k.Quota != quota || k.Rate5H != b.Config.Rate5H || k.Rate1D != b.Config.Rate1D || k.Rate7D != b.Config.Rate7D || l.ValidUntil != nil && (k.ExpiresAt == nil || k.ExpiresAt.Unix() != l.ValidUntil.Unix()) {
 		return nil, errors.New("provider configuration readback mismatch")
 	}
-	view := k.Public()
+	view := aiUsageView(k, b)
 	if id == b.RemoteID {
 		b.RemoteView = view
 	}

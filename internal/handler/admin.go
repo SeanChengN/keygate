@@ -115,6 +115,9 @@ func (h *AdminHandler) UpdateProduct(c *gin.Context) {
 		response.NotFound(c, "product not found")
 		return
 	}
+	if !requireKeyProductScope(c, p.ID) {
+		return
+	}
 
 	var req struct {
 		Name                    string  `json:"name"`
@@ -123,9 +126,14 @@ func (h *AdminHandler) UpdateProduct(c *gin.Context) {
 		MinimumSupportedVersion *string `json:"minimum_supported_version"`
 		MinimumSupportedMessage *string `json:"minimum_supported_message"`
 		RequireSigning          *bool   `json:"require_signing"`
+		InventoryEnabled        *bool   `json:"inventory_enabled"`
+		PackageAIEnabled        *bool   `json:"package_ai_enabled"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request body")
+		return
+	}
+	if (req.InventoryEnabled != nil || req.PackageAIEnabled != nil) && !inventoryAdmin(c) {
 		return
 	}
 	if req.Name != "" {
@@ -186,7 +194,10 @@ func (h *AdminHandler) UpdateProduct(c *gin.Context) {
 		p.RequireSigning = *req.RequireSigning
 	}
 
-	if err := h.Store.UpdateProduct(c, p); err != nil {
+	if err := h.Store.UpdateProduct(c, p, req.InventoryEnabled, req.PackageAIEnabled, adminID(c)); errors.Is(err, store.ErrProductInventoryType) {
+		response.Err(c, http.StatusConflict, "INVENTORY_DEVICE_ACTIVATION_REQUIRED", err.Error())
+		return
+	} else if err != nil {
 		response.Internal(c)
 		return
 	}
@@ -238,6 +249,7 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 		Slug            string `json:"slug" binding:"required"`
 		LicenseType     string `json:"license_type" binding:"required"`
 		BillingInterval string `json:"billing_interval"`
+		BillingDays     int    `json:"billing_days"`
 		MaxActivations  int    `json:"max_activations"`
 		MaxSeats        int    `json:"max_seats"`
 		TrialDays       int    `json:"trial_days"`
@@ -249,6 +261,9 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "product_id, name, slug, and license_type are required")
+		return
+	}
+	if !requireKeyProductScope(c, req.ProductID) {
 		return
 	}
 
@@ -271,6 +286,10 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
+	if err := validateBillingDays(req.BillingInterval, req.BillingDays, req.GraceDays, req.StripePriceID); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
 
 	if err := validatePlanNumericBounds(planBounds{
 		MaxActivations:  req.MaxActivations,
@@ -283,7 +302,7 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 		return
 	}
 
-	if req.GraceDays <= 0 {
+	if req.BillingInterval != "day" && req.GraceDays <= 0 {
 		req.GraceDays = 7
 	}
 
@@ -338,6 +357,7 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 		Slug:            req.Slug,
 		LicenseType:     req.LicenseType,
 		BillingInterval: req.BillingInterval,
+		BillingDays:     req.BillingDays,
 		MaxActivations:  req.MaxActivations,
 		MaxSeats:        req.MaxSeats,
 		TrialDays:       req.TrialDays,
@@ -348,7 +368,10 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 		Active:          true,
 		SortOrder:       req.SortOrder,
 	}
-	if err := h.Store.CreatePlan(c, p); err != nil {
+	if err := h.Store.CreatePlan(c, p); errors.Is(err, store.ErrProductInventoryType) {
+		response.Err(c, http.StatusConflict, "DAY_PLAN_INVENTORY_REQUIRED", "请先为产品开启寄售库存")
+		return
+	} else if err != nil {
 		response.Err(c, http.StatusConflict, "DUPLICATE", "plan slug already exists for this product")
 		return
 	}
@@ -368,12 +391,16 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 		response.NotFound(c, "plan not found")
 		return
 	}
+	if !requireKeyProductScope(c, p.ProductID) {
+		return
+	}
 
 	var req struct {
 		Name            *string `json:"name"`
 		Slug            *string `json:"slug"`
 		LicenseType     *string `json:"license_type"`
 		BillingInterval *string `json:"billing_interval"`
+		BillingDays     *int    `json:"billing_days"`
 		MaxActivations  *int    `json:"max_activations"`
 		MaxSeats        *int    `json:"max_seats"`
 		TrialDays       *int    `json:"trial_days"`
@@ -441,6 +468,10 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
+	if (p.BillingInterval == "day") != (effectiveBillingInterval == "day") {
+		response.BadRequest(c, "create a separate plan to change to or from day billing")
+		return
+	}
 
 	// Numeric-range validation. Pull from the request when the
 	// field was provided, otherwise the existing row value (so a
@@ -466,6 +497,18 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 	if req.FloatingTimeout != nil {
 		check.FloatingTimeout = *req.FloatingTimeout
 	}
+	days, stripePrice := p.BillingDays, p.StripePriceID
+	if req.BillingDays != nil {
+		days = *req.BillingDays
+	}
+	if req.StripePriceID != nil {
+		stripePrice = *req.StripePriceID
+	}
+	if err := validateBillingDays(effectiveBillingInterval, days, check.GraceDays, stripePrice); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	p.BillingDays = days
 	if err := validatePlanNumericBounds(check); err != nil {
 		response.BadRequest(c, err.Error())
 		return
@@ -572,6 +615,9 @@ func (h *AdminHandler) CreateEntitlement(c *gin.Context) {
 		QuotaPeriod: req.QuotaPeriod, QuotaUnit: req.QuotaUnit,
 		StripeMeterEventName: req.StripeMeterEventName,
 	}
+	if model.IsAIProfile(e.Feature) && !h.validateAIProfileEntitlement(c, e) {
+		return
+	}
 	if err := h.Store.CreateEntitlement(c, e); err != nil {
 		response.Err(c, http.StatusConflict, "DUPLICATE", "entitlement already exists for this plan and feature")
 		return
@@ -585,7 +631,9 @@ func (h *AdminHandler) UpdateEntitlement(c *gin.Context) {
 		response.NotFound(c, "entitlement not found")
 		return
 	}
+	previous := *e
 	var req struct {
+		ExpectedValue        *string `json:"expected_value"`
 		Feature              *string `json:"feature"`
 		ValueType            *string `json:"value_type"`
 		Value                *string `json:"value"`
@@ -623,14 +671,90 @@ func (h *AdminHandler) UpdateEntitlement(c *gin.Context) {
 		e.StripeMeterEventName = *req.StripeMeterEventName
 	}
 
-	if err := h.Store.UpdateEntitlement(c, e); err != nil {
+	if req.ExpectedValue != nil && previous.Feature == "studio.ai_profile" {
+		plan, err := h.Store.FindPlanByID(c, e.PlanID)
+		if err != nil {
+			response.NotFound(c, "plan not found")
+			return
+		}
+		if !h.aiProduct(c, plan.ProductID) {
+			return
+		}
+		if e.Feature != previous.Feature || req.Value == nil {
+			response.BadRequest(c, "the model tier editor only updates the existing studio.ai_profile value")
+			return
+		}
+	}
+	if req.ExpectedValue != nil && *req.ExpectedValue != previous.Value {
+		response.Err(c, http.StatusConflict, "ENTITLEMENT_CHANGED", "The entitlement changed. Reopen the editor and try again.")
+		return
+	}
+	if model.IsAIProfile(e.Feature) || model.IsAIProfile(previous.Feature) {
+		if e.Feature != previous.Feature {
+			response.BadRequest(c, "AI profile features cannot be renamed")
+			return
+		}
+		if !h.validateAIProfileEntitlement(c, e) {
+			return
+		}
+	}
+	if model.IsAIProfile(e.Feature) && req.Value != nil {
+		if err := validateProfileChange(&previous, e, req.ExpectedValue); err != nil {
+			response.BadRequest(c, err.Error())
+			return
+		}
+	}
+	var updateErr error
+	if model.IsAIProfile(e.Feature) && req.Value != nil || req.ExpectedValue != nil {
+		updateErr = h.Store.UpdateEntitlementIfCurrent(c, e, previous.Value)
+	} else {
+		updateErr = h.Store.UpdateEntitlement(c, e)
+	}
+	if errors.Is(updateErr, sql.ErrNoRows) {
+		response.Err(c, http.StatusConflict, "ENTITLEMENT_CHANGED", "The entitlement changed. Reopen the editor and try again.")
+		return
+	}
+	if updateErr != nil {
 		response.Internal(c)
 		return
 	}
 	response.OK(c, e)
 }
 
+func (h *AdminHandler) validateAIProfileEntitlement(c *gin.Context, e *model.Entitlement) bool {
+	plan, err := h.Store.FindPlanByID(c, e.PlanID)
+	if err != nil {
+		response.NotFound(c, "plan not found")
+		return false
+	}
+	if !requireKeyProductScope(c, plan.ProductID) {
+		return false
+	}
+	if e.ValueType != "string" {
+		response.BadRequest(c, "AI profile must be a JSON string entitlement")
+		return false
+	}
+	if _, err := service.AIProfileBinding(&model.Plan{Entitlements: []*model.Entitlement{e}}); err != nil {
+		response.BadRequest(c, err.Error())
+		return false
+	}
+	return true
+}
+
 func (h *AdminHandler) DeleteEntitlement(c *gin.Context) {
+	e, err := h.Store.FindEntitlementByID(c, c.Param("id"))
+	if err != nil {
+		response.NotFound(c, "entitlement not found")
+		return
+	}
+	plan, err := h.Store.FindPlanByID(c, e.PlanID)
+	if err != nil {
+		response.NotFound(c, "plan not found")
+		return
+	}
+	if !requireKeyProductScope(c, plan.ProductID) {
+		return
+	}
 	if err := h.Store.DeleteEntitlement(c, c.Param("id")); err != nil {
 		response.Internal(c)
 		return
@@ -759,13 +883,27 @@ func validatePlanNumericBounds(b planBounds) error {
 
 func validateBillingInterval(licenseType, interval string) error {
 	if licenseType == "subscription" {
-		if interval != "month" && interval != "year" {
-			return fmt.Errorf("subscription billing_interval must be month or year")
+		if interval != "month" && interval != "year" && interval != "day" {
+			return fmt.Errorf("subscription billing_interval must be day, month or year")
 		}
 		return nil
 	}
 	if interval != "" {
 		return fmt.Errorf("billing_interval must be empty for perpetual and trial plans")
+	}
+	return nil
+}
+
+func validateBillingDays(interval string, days, grace int, price string) error {
+	if interval == "day" {
+		if _, err := billing.AddDays(time.Time{}, days); err != nil {
+			return err
+		}
+		if grace != 0 || price != "" {
+			return errors.New("day plans require zero grace and cannot use Stripe")
+		}
+	} else if days != 0 {
+		return errors.New("billing_days is only supported for day plans")
 	}
 	return nil
 }
@@ -889,7 +1027,12 @@ func (h *AdminHandler) GetLicense(c *gin.Context) {
 	// deliberate break here is that license_key is gone. The hint
 	// rides alongside them; the key itself is one explicit request
 	// away via RevealLicenseKey.
-	response.OK(c, licenseWithHint{License: l, LicenseKeyHint: h.licenseKeyHint(l)})
+	enrolled, err := h.Store.DB.NewSelect().Model((*model.AIBinding)(nil)).Where("license_id=?", id).Exists(c)
+	if err != nil {
+		response.Internal(c)
+		return
+	}
+	response.OK(c, licenseWithHint{License: l, LicenseKeyHint: h.licenseKeyHint(l), AIEnrolled: enrolled})
 }
 
 func (h *AdminHandler) CreateLicense(c *gin.Context) {
@@ -908,6 +1051,9 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "product_id, plan_id, and email are required")
+		return
+	}
+	if !requireKeyProductScope(c, req.ProductID) {
 		return
 	}
 
@@ -943,6 +1089,10 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 			"plan does not belong to the requested product")
 		return
 	}
+	if plan.BillingInterval == "day" {
+		response.Err(c, 409, "DAY_PLAN_INVENTORY_REQUIRED", "按天方案请通过寄售库存签发")
+		return
+	}
 
 	var validUntil *time.Time
 	var billingLocation *time.Location
@@ -964,11 +1114,6 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 			return
 		}
 		validUntil = &ts
-	}
-	// API-key scoping: a key bound to product A can't mint a license
-	// for product B even if it carries licenses:write.
-	if !requireKeyProductScope(c, req.ProductID) {
-		return
 	}
 	if req.CustomerID != "" {
 		customer, err := h.Store.FindCustomerByID(c, req.CustomerID)
@@ -1075,6 +1220,7 @@ type licenseWithKey struct {
 type licenseWithHint struct {
 	*model.License
 	LicenseKeyHint string `json:"license_key_hint"`
+	AIEnrolled     bool   `json:"ai_enrolled"`
 }
 
 // licenseKeyHint is the last four characters of a key — a row label,
@@ -1374,6 +1520,10 @@ func (h *AdminHandler) SetLicenseValidUntil(c *gin.Context) {
 	lic, err := h.Store.FindLicenseByID(c, id)
 	if err != nil {
 		response.NotFound(c, "license not found")
+		return
+	}
+	if lic.ActivationDays > 0 {
+		response.Err(c, 409, "DAY_LICENSE_TERM_FIXED", "按天许可证不能修改到期时间")
 		return
 	}
 
@@ -2033,6 +2183,10 @@ func (h *AdminHandler) ChangeLicensePlan(c *gin.Context) {
 	}
 	if plan.ProductID != l.ProductID {
 		response.BadRequest(c, "plan must belong to the same product")
+		return
+	}
+	if l.ActivationDays > 0 || plan.BillingInterval == "day" {
+		response.Err(c, 409, "DAY_LICENSE_TERM_FIXED", "按天许可证不能更换方案")
 		return
 	}
 

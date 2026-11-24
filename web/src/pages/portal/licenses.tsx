@@ -847,7 +847,10 @@ function ChangePlanDialog({ license, onClose }: { license: PortalLicense; onClos
                 <div>
                   <p className="font-medium text-sm">{plan.name}</p>
                   <p className="text-xs text-muted-foreground">
-                    {plan.license_type} · {plan.billing_interval || t("plans.perpetual")}
+                    {plan.license_type} ·{" "}
+                    {plan.billing_interval === "day"
+                      ? t("plans.termDays", { days: plan.billing_days ?? 0 })
+                      : plan.billing_interval || t("plans.perpetual")}
                   </p>
                 </div>
                 <Button

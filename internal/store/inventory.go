@@ -26,6 +26,7 @@ type InventoryBatch struct {
 	ActorID       string    `json:"-"`
 	RequestKey    string    `json:"-"`
 	Quantity      int       `json:"quantity"`
+	WithAI        bool      `json:"with_ai"`
 	Notes         string    `json:"notes"`
 	CreatedAt     time.Time `json:"created_at"`
 }
@@ -43,10 +44,16 @@ func (s *Store) InventoryBatch(ctx context.Context, id string) (*InventoryBatch,
 	err := s.DB.NewSelect().Model(b).Where("id=?", id).Scan(ctx)
 	return b, err
 }
+func (s *Store) InventoryBatchByRequest(ctx context.Context, actor, key string) (*InventoryBatch, error) {
+	b := new(InventoryBatch)
+	err := s.DB.NewSelect().Model(b).Where("actor_id=? AND request_key=?", actor, key).Scan(ctx)
+	return b, err
+}
 func (s *Store) CreateInventory(ctx context.Context, b *InventoryBatch, config *AIPlanRecord) error {
 	if b.Quantity < 1 || b.Quantity > 500 {
 		return ErrInventoryIneligible
 	}
+	b.WithAI = config != nil
 	return s.DB.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtextextended(?,0))", "stock-batch:"+b.ActorID); err != nil {
 			return err
@@ -57,7 +64,7 @@ func (s *Store) CreateInventory(ctx context.Context, b *InventoryBatch, config *
 		var prior InventoryBatch
 		err := tx.NewSelect().Model(&prior).Where("actor_id=? AND request_key=?", b.ActorID, b.RequestKey).Scan(ctx)
 		if err == nil {
-			if prior.PlanID != b.PlanID || prior.ProductID != b.ProductID || prior.Quantity != b.Quantity || prior.Notes != b.Notes {
+			if prior.PlanID != b.PlanID || prior.ProductID != b.ProductID || prior.Quantity != b.Quantity || prior.Notes != b.Notes || prior.WithAI != b.WithAI {
 				return ErrInventoryConflict
 			}
 			*b = prior
@@ -70,16 +77,26 @@ func (s *Store) CreateInventory(ctx context.Context, b *InventoryBatch, config *
 		if err := tx.NewSelect().Model(&plan).Where("id=?", b.PlanID).For("UPDATE").Scan(ctx); err != nil {
 			return err
 		}
-		if plan.ProductID != b.ProductID || plan.LicenseType != "subscription" || (plan.BillingInterval != "month" && plan.BillingInterval != "year") || plan.GraceDays != 0 || !plan.Active {
+		var product model.Product
+		if err := tx.NewSelect().Model(&product).Where("id=?", b.ProductID).For("UPDATE").Scan(ctx); err != nil {
+			return err
+		}
+		if !product.InventoryEnabled || !model.ProductSupports(product.Type, model.CapActivations) ||
+			plan.ProductID != b.ProductID || plan.LicenseType != "subscription" || plan.GraceDays != 0 || !plan.Active {
 			return ErrInventoryIneligible
 		}
 		// Re-read the version under the same lock used by plan saves and issuance.
 		var current AIPlanRecord
-		if err := tx.NewSelect().Table("ai_plan_settings").Column("config", "profile_binding", "revision").Where("plan_id=?", b.PlanID).Scan(ctx, &current); err != nil {
-			return err
-		}
-		if current.Revision != config.Revision || current.ProfileBinding != config.ProfileBinding {
-			return ErrInventoryConflict
+		if b.WithAI {
+			if !product.PackageAIEnabled {
+				return ErrInventoryIneligible
+			}
+			if err := tx.NewSelect().Table("ai_plan_settings").Column("config", "profile_binding", "revision").Where("plan_id=?", b.PlanID).Scan(ctx, &current); err != nil {
+				return err
+			}
+			if current.Revision != config.Revision || current.ProfileBinding != config.ProfileBinding {
+				return ErrInventoryConflict
+			}
 		}
 		zone, err := s.BillingLocation(ctx)
 		if err != nil {
@@ -91,12 +108,15 @@ func (s *Store) CreateInventory(ctx context.Context, b *InventoryBatch, config *
 			return err
 		}
 		for n := 0; n < b.Quantity; n++ {
-			l := &model.License{ProductID: b.ProductID, PlanID: b.PlanID, LicenseKey: license.GenerateKey(""), Email: "", Status: model.StatusPendingActivation, ValidFrom: b.CreatedAt, IssuanceBatchID: b.ID, ActivationInterval: plan.BillingInterval, ActivationTimezone: zone.String(), Notes: b.Notes}
+			l := &model.License{ProductID: b.ProductID, PlanID: b.PlanID, LicenseKey: license.GenerateKey(""), Email: "", Status: model.StatusPendingActivation, ValidFrom: b.CreatedAt, IssuanceBatchID: b.ID, ActivationInterval: plan.BillingInterval, ActivationDays: plan.BillingDays, ActivationTimezone: zone.String(), InventoryAI: b.WithAI, Notes: b.Notes}
 			if err := s.prepareLicenseForInsert(l); err != nil {
 				return err
 			}
 			if _, err := tx.NewInsert().Model(l).Exec(ctx); err != nil {
 				return err
+			}
+			if !b.WithAI {
+				continue
 			}
 			binding := &model.AIBinding{LicenseID: l.ID, ProductID: l.ProductID, Config: current.Config, ProfileBinding: current.ProfileBinding, PlanRevision: current.Revision, Origin: "stock", Generation: 1, State: "waiting_activation", RemoteView: map[string]any{}, Anchor: b.CreatedAt, Timezone: zone.String(), UpdatedAt: b.CreatedAt}
 			if _, err := tx.NewInsert().Model(binding).Exec(ctx); err != nil {
@@ -141,14 +161,17 @@ func (s *Store) StartInventory(ctx context.Context, id string, act *model.Activa
 			return err
 		}
 		now := time.Now()
-		until, err := billing.AddPeriod(now, l.ActivationInterval, zone)
+		var until time.Time
+		if l.ActivationInterval == "day" {
+			now = now.UTC().Truncate(time.Second)
+			until, err = billing.AddDays(now, l.ActivationDays)
+		} else {
+			until, err = billing.AddPeriod(now, l.ActivationInterval, zone)
+		}
 		if err != nil {
 			return err
 		}
 		if _, err = tx.ExecContext(ctx, "UPDATE licenses SET status='active',valid_from=?,valid_until=?,updated_at=? WHERE id=?", now, until, now, id); err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, "UPDATE license_ai_bindings SET anchor=?,state='pending',updated_at=? WHERE license_id=?", now, now, id); err != nil {
 			return err
 		}
 		sub := &model.Subscription{ID: newID(), LicenseID: id, PlanID: l.PlanID, Status: model.StatusActive, CurrentPeriodStart: &now, CurrentPeriodEnd: &until}
@@ -160,8 +183,17 @@ func (s *Store) StartInventory(ctx context.Context, id string, act *model.Activa
 		if _, err = tx.NewInsert().Model(act).Exec(ctx); err != nil {
 			return err
 		}
-		if err = EnqueueAI(ctx, tx, id, "sync", "stock-activation"); err != nil {
-			return err
+		if l.InventoryAI {
+			result, err := tx.ExecContext(ctx, "UPDATE license_ai_bindings SET anchor=?,state='pending',updated_at=? WHERE license_id=?", now, now, id)
+			if err != nil {
+				return err
+			}
+			if count, err := result.RowsAffected(); err != nil || count != 1 {
+				return ErrInventoryConflict
+			}
+			if err = EnqueueAI(ctx, tx, id, "sync", "stock-activation"); err != nil {
+				return err
+			}
 		}
 		_, err = tx.NewInsert().Model(&model.AuditLog{ID: newID(), Entity: "license", EntityID: id, Action: "activated", ActorType: "sdk", Changes: map[string]any{"inventory": true}}).Exec(ctx)
 		started = true

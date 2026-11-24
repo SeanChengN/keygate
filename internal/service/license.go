@@ -119,7 +119,22 @@ func (s *LicenseService) Activate(ctx context.Context, in ActivateInput) (*Activ
 		if _, err := s.store.StartInventory(ctx, lic.ID, act); err != nil {
 			return nil, apperr.Conflict("ACTIVATION_LIMIT", "此库存已被其他设备激活或状态已改变")
 		}
-		return &ActivateResult{Status: "activation_pending", LicenseID: lic.ID, Meta: map[string]any{"retry_after": 3}}, nil
+		if lic.InventoryAI {
+			return &ActivateResult{Status: "activation_pending", LicenseID: lic.ID, Meta: map[string]any{"retry_after": 3}}, nil
+		}
+		lic, err = s.store.FindLicenseByID(ctx, lic.ID)
+		if err != nil {
+			return nil, apperr.Internal(err)
+		}
+		// The device proof was consumed when starting the inventory transaction.
+		if err := s.assertUsable(lic); err != nil {
+			return nil, err
+		}
+		token, err := s.signToken(lic, in.Identifier, act.DevicePublicKey)
+		if err != nil {
+			return nil, apperr.Internal(err)
+		}
+		return &ActivateResult{Status: "activated", LicenseID: lic.ID, Token: token, Meta: responseMeta()}, nil
 	}
 	if err := s.assertUsable(lic); err != nil {
 		return nil, err
@@ -138,7 +153,7 @@ func (s *LicenseService) Activate(ctx context.Context, in ActivateInput) (*Activ
 			return nil, apperr.Conflict("DEVICE_REENROLL_REQUIRED",
 				"legacy activation must be removed or approved before binding a device key")
 		}
-		if lic.IssuanceBatchID != "" {
+		if lic.InventoryAI {
 			pending, err := s.inventoryPending(ctx, lic)
 			if err != nil {
 				return nil, err
@@ -314,7 +329,7 @@ func (s *LicenseService) Verify(ctx context.Context, in VerifyInput) (*VerifyRes
 		in.Identifier, lic.ProductID, "", "", "", act.DevicePublicKey); err != nil {
 		return nil, err
 	}
-	if lic.IssuanceBatchID != "" {
+	if lic.InventoryAI {
 		pending, err := s.inventoryPending(ctx, lic)
 		if err != nil {
 			return nil, err
@@ -654,6 +669,7 @@ func (s *LicenseService) signTokenAt(lic *model.License, identifier string, now 
 		IssuedAt:    now.Unix(),
 		ExpiresAt:   s.tokenExpiresAt(lic, now).Unix(),
 		GraceDays:   s.effectiveGraceDays(lic),
+		BillingDays: lic.ActivationDays,
 		Fingerprint: fingerprint,
 	}
 	if s.AI != nil {

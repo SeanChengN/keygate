@@ -33,7 +33,7 @@ func TestAIInventoryMetadataAndTXT(t *testing.T) {
 		}
 	}
 	check(s.RunMigrations("../../db/migrations"))
-	p := &model.Product{Name: "Inventory handler", Slug: "movaura-studio", Type: "desktop"}
+	p := &model.Product{Name: "Inventory handler", Slug: "movaura-studio", Type: "desktop", InventoryEnabled: true, PackageAIEnabled: true}
 	if s.DB.NewSelect().Model(p).Where("slug='movaura-studio'").Scan(ctx) != nil {
 		check(s.CreateProduct(ctx, p))
 	}
@@ -54,7 +54,9 @@ func TestAIInventoryMetadataAndTXT(t *testing.T) {
 			c.Set("api_key", &model.APIKey{ProductID: "foreign"})
 		}
 	})
+	router.GET("/batches", h.ListInventoryBatches)
 	router.GET("/batches/:id", h.GetInventoryBatch)
+	router.GET("/exports", h.ListKeyExports)
 	router.POST("/exports", h.CreateKeyExport)
 	router.GET("/exports/:id", h.DownloadKeyExport)
 	router.DELETE("/plans/:id", h.DeletePlan)
@@ -68,7 +70,15 @@ func TestAIInventoryMetadataAndTXT(t *testing.T) {
 		router.ServeHTTP(w, r)
 		return w
 	}
-	w := call("GET", "/batches/"+b.ID, "", false)
+	w := call("GET", "/batches?product_id="+store.NewID(), "", false)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"batches":[]`) {
+		t.Fatalf("empty batch list must be an array: %d %s", w.Code, w.Body.String())
+	}
+	w = call("GET", "/exports", "", false)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"exports":[`) {
+		t.Fatalf("export list must be an array: %d", w.Code)
+	}
+	w = call("GET", "/batches/"+b.ID, "", false)
 	if w.Code != 200 || strings.Contains(w.Body.String(), "license_key") || strings.Contains(w.Body.String(), "secret") {
 		t.Fatal("batch leaked credentials")
 	}

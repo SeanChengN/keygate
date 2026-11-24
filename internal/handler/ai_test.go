@@ -70,6 +70,7 @@ func TestAIAdminScopeAndRedaction(t *testing.T) {
 	r.PUT("/products/:id/ai-account", h.PutAIAccount)
 	r.PUT("/plans/:id/ai", h.PutAIPlan)
 	r.GET("/plans/:id/ai", h.GetAIPlan)
+	r.PUT("/entitlements/:id", h.UpdateEntitlement)
 	r.POST("/inventory", h.CreateInventoryBatch)
 	r.GET("/licenses", h.ListLicenses)
 	r.GET("/licenses/:id/ai", h.GetLicenseAI)
@@ -149,8 +150,33 @@ func TestAIAdminScopeAndRedaction(t *testing.T) {
 	if err = s.CreatePlan(ctx, plan); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.CreateEntitlement(ctx, &model.Entitlement{PlanID: plan.ID, Feature: "studio.ai_profile", ValueType: "string", Value: `{"provider_id":"jiji","base_url":"https://api-slb.jiji.cc/v1","protocol":"openai"}`}); err != nil {
+	profile := &model.Entitlement{PlanID: plan.ID, Feature: "studio.ai_profile", ValueType: "string",
+		Value: `{"version":2,"provider_id":"jiji","name":"Synthetic","base_url":"https://api-slb.jiji.cc/v1","protocol":"openai","quota_adapter":"jiji","models":{"text":["luna"],"vision":["luna"]},"defaults":{"text":"luna","vision":"luna"}}`}
+	if err = s.CreateEntitlement(ctx, profile); err != nil {
 		t.Fatal(err)
+	}
+	next := `{"version":3,"provider_id":"jiji","name":"Synthetic","base_url":"https://api-slb.jiji.cc/v1","protocol":"openai","quota_adapter":"jiji","models":{"text":["astra","sol","luna"],"vision":["astra","terra","luna"]},"defaults":{"text":"sol","vision":"terra"}}`
+	payload, _ := json.Marshal(map[string]string{"value": next, "expected_value": profile.Value})
+	updateProfile := func(foreign bool) *httptest.ResponseRecorder {
+		q := httptest.NewRequest(http.MethodPut, "/entitlements/"+profile.ID, strings.NewReader(string(payload)))
+		if foreign {
+			q.Header.Set("Test-Foreign-Scope", "1")
+		}
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, q)
+		return w
+	}
+	if w = updateProfile(true); w.Code != http.StatusForbidden {
+		t.Fatalf("foreign profile write returned %d", w.Code)
+	}
+	if w = updateProfile(false); w.Code != http.StatusOK {
+		t.Fatalf("profile write returned %d: %s", w.Code, w.Body.String())
+	}
+	if w = updateProfile(false); w.Code != http.StatusConflict {
+		t.Fatalf("stale profile write returned %d", w.Code)
+	}
+	if saved, readErr := s.FindEntitlementByID(ctx, profile.ID); readErr != nil || saved.Value != next {
+		t.Fatalf("profile update did not persist: %v", readErr)
 	}
 	update := func(body string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()

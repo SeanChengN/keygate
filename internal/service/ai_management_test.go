@@ -31,7 +31,7 @@ func TestAIManagementPropagationProvisionAndDelete(t *testing.T) {
 		}
 	}
 	check(s.RunMigrations("../../db/migrations"))
-	p := &model.Product{Name: "AI management", Slug: "movaura-studio", Type: "desktop"}
+	p := &model.Product{Name: "AI management", Slug: "movaura-studio", Type: "desktop", InventoryEnabled: true, PackageAIEnabled: true}
 	if s.DB.NewSelect().Model(p).Where("slug='movaura-studio'").Scan(ctx) != nil {
 		check(s.CreateProduct(ctx, p))
 	}

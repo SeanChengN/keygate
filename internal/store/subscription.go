@@ -16,6 +16,7 @@ var (
 	ErrManualRenewalBlocked         = errors.New("license must be reinstated before renewal")
 	ErrSubscriptionExpiryRequired   = errors.New("subscription licenses must have an expiry")
 	ErrSubscriptionRecordRequired   = errors.New("subscription record is missing")
+	ErrDayLicenseTermFixed          = errors.New("day license term is fixed")
 )
 
 type ManualRenewalResult struct {
@@ -91,6 +92,13 @@ func (s *Store) SetLicenseValidUntil(ctx context.Context, licenseID string, vali
 		return err
 	}
 	defer tx.Rollback()
+	var license model.License
+	if err := tx.NewSelect().Model(&license).Column("activation_days").Where("id=?", licenseID).For("UPDATE").Scan(ctx); err != nil {
+		return err
+	}
+	if license.ActivationDays > 0 {
+		return ErrDayLicenseTermFixed
+	}
 
 	var sub *model.Subscription
 	if syncSubscription {
@@ -288,6 +296,17 @@ func (s *Store) ChangeLicensePlan(ctx context.Context, licenseID, planID string)
 		return err
 	}
 	defer tx.Rollback()
+	var existing model.License
+	if err := tx.NewSelect().Model(&existing).Column("activation_days", "product_id").Where("id=?", licenseID).For("UPDATE").Scan(ctx); err != nil {
+		return err
+	}
+	var target model.Plan
+	if err := tx.NewSelect().Model(&target).Column("billing_interval").Where("id=? AND product_id=?", planID, existing.ProductID).Scan(ctx); err != nil {
+		return err
+	}
+	if existing.ActivationDays > 0 || target.BillingInterval == "day" {
+		return ErrDayLicenseTermFixed
+	}
 	if _, err := tx.NewUpdate().Model((*model.License)(nil)).
 		Set("plan_id = ?, updated_at = now()", planID).
 		Where("id = ?", licenseID).

@@ -158,7 +158,7 @@ func (h *StripeHandler) CheckoutByPlan(c *gin.Context) {
 		return
 	}
 
-	if plan.StripePriceID == "" {
+	if plan.BillingInterval == "day" || plan.StripePriceID == "" {
 		c.String(http.StatusServiceUnavailable, "payment not configured for this plan")
 		return
 	}

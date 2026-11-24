@@ -531,6 +531,9 @@ func (s *Store) CreateLicense(ctx context.Context, l *model.License) error {
 // CreateLicenseWithSubscription creates a license and, for subscription/trial plans,
 // a subscription record in a single transaction to prevent orphan records.
 func (s *Store) CreateLicenseWithSubscription(ctx context.Context, l *model.License, plan *model.Plan) error {
+	if plan != nil && plan.BillingInterval == "day" {
+		return ErrInventoryIneligible
+	}
 	if err := s.prepareLicenseForInsert(l); err != nil {
 		return err
 	}
