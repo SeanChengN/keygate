@@ -52,6 +52,7 @@ const codes: Record<string, TranslationKeys> = {
   INVENTORY_PLAN_MISMATCH: "inventory.planMismatch",
   INVENTORY_ADMIN_REQUIRED: "inventory.adminRequired",
   EXPORT_RECORD_MISSING: "inventory.recordMissing",
+  ENTITLEMENT_CHANGED: "plans.entitlementChanged",
   NETWORK_ERROR: "errors.network",
   SESSION_EXPIRED: "errors.session",
   FORBIDDEN: "errors.forbidden",

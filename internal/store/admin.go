@@ -229,8 +229,11 @@ func (s *Store) UpdateEntitlement(ctx context.Context, e *model.Entitlement) err
 	return err
 }
 
-func (s *Store) UpdateEntitlementIfCurrent(ctx context.Context, e *model.Entitlement, expected string) error {
-	result, err := s.DB.NewUpdate().Model(e).WherePK().Where("value = ?", expected).Exec(ctx)
+func (s *Store) UpdateEntitlementIfCurrent(ctx context.Context, e, expected *model.Entitlement) error {
+	result, err := s.DB.NewUpdate().Model(e).WherePK().
+		Where("feature = ? AND value_type = ? AND value = ?", expected.Feature, expected.ValueType, expected.Value).
+		Where("quota_period = ? AND quota_unit = ? AND stripe_meter_event_name = ?", expected.QuotaPeriod, expected.QuotaUnit, expected.StripeMeterEventName).
+		Exec(ctx)
 	if err != nil {
 		return err
 	}

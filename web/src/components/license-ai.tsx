@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ChevronDown, Copy, MoreHorizontal } from "lucide-react"
 import { useEffect, useId, useRef, useState } from "react"
+import { Link } from "react-router-dom"
 import { showToast } from "@/components/toast"
 import {
   AlertDialog,
@@ -548,18 +549,27 @@ export function AIPlanDialog({
               if (groupCanSave) setConfirmSave(true)
             }}
           >
-            <Label className="flex gap-2">
-              <input
-                type="checkbox"
-                checked={value.enabled && canProvision}
-                disabled={!canProvision || dayPlan}
-                onChange={(e) => {
-                  setDirty(true)
-                  setValue({ ...value, enabled: e.target.checked })
-                }}
-              />
-              {t("ai.autoProvision")}
-            </Label>
+            {dayPlan ? (
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">{t("ai.dayInventoryOnly")}</p>
+                <Button variant="outline" size="sm" asChild>
+                  <Link to="/admin/licenses?inventory=open">{t("ai.openInventory")}</Link>
+                </Button>
+              </div>
+            ) : (
+              <Label className="flex gap-2">
+                <input
+                  type="checkbox"
+                  checked={value.enabled && canProvision}
+                  disabled={!canProvision}
+                  onChange={(e) => {
+                    setDirty(true)
+                    setValue({ ...value, enabled: e.target.checked })
+                  }}
+                />
+                {t("ai.autoProvision")}
+              </Label>
+            )}
             {!canProvision && <p className="text-xs text-muted-foreground">{t("products.aiDeliveryUnavailable")}</p>}
             <Limits
               dayPlan={dayPlan}

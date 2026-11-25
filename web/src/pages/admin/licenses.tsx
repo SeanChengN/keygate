@@ -64,7 +64,14 @@ function maskKey(hint?: string) {
 export default function LicensesPage() {
   const { t } = useI18n()
   const qc = useQueryClient()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [openInventory] = useState(() => searchParams.get("inventory") === "open")
+  useEffect(() => {
+    if (searchParams.get("inventory") !== "open") return
+    const next = new URLSearchParams(searchParams)
+    next.delete("inventory")
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
   const initialCustomerId = searchParams.get("customer_id") || ""
   const [productFilter, setProductFilter] = useState<string>("")
   const [statusFilter, setStatusFilter] = useState<string>("")
@@ -148,7 +155,7 @@ export default function LicensesPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <InventoryManager selected={selected} clear={() => setSelected([])} />
+          <InventoryManager initialOpen={openInventory} selected={selected} clear={() => setSelected([])} />
           <Button onClick={() => setCreating(true)}>
             <Plus className="h-4 w-4 mr-2" /> {t("licenses.issue")}
           </Button>

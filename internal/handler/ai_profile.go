@@ -16,6 +16,26 @@ type profileModels struct {
 	Defaults map[string]string   `json:"defaults"`
 }
 
+func validateProfileValue(raw string) error {
+	var profile struct {
+		profileModels
+		ProviderID   string `json:"provider_id"`
+		Name         string `json:"name"`
+		BaseURL      string `json:"base_url"`
+		Protocol     string `json:"protocol"`
+		QuotaAdapter string `json:"quota_adapter"`
+		Support      string `json:"support"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if len(raw) > 32*1024 || !json.Valid([]byte(raw)) || decoder.Decode(&profile) != nil ||
+		profile.Version < 1 || len([]rune(profile.Name)) == 0 || len([]rune(profile.Name)) > 80 ||
+		(profile.QuotaAdapter != "jiji" && profile.QuotaAdapter != "none") || len([]rune(profile.Support)) > 500 {
+		return errors.New("AI profile must contain a version, service name, models, defaults and a valid quota adapter")
+	}
+	return validateProfileModels(profile.profileModels, false)
+}
+
 func validateProfileChange(previous, next *model.Entitlement, expected *string) error {
 	if previous.Value == next.Value {
 		return nil
@@ -40,13 +60,17 @@ func validateProfileChange(previous, next *model.Entitlement, expected *string) 
 			return errors.New("the model tier editor preserves the existing provider, route and other profile settings")
 		}
 	}
-	if len(newProfile.Models) != 2 || len(newProfile.Defaults) != 2 {
+	return validateProfileModels(newProfile, expected != nil)
+}
+
+func validateProfileModels(profile profileModels, tiers bool) error {
+	if len(profile.Models) != 2 || len(profile.Defaults) != 2 {
 		return errors.New("text and vision models and defaults are required")
 	}
 	for _, kind := range []string{"text", "vision"} {
-		models := newProfile.Models[kind]
-		if len(models) == 0 || len(models) > 200 || (expected != nil && len(models) != 3) ||
-			!slices.Contains(models, newProfile.Defaults[kind]) {
+		models := profile.Models[kind]
+		if len(models) == 0 || len(models) > 200 || (tiers && len(models) != 3) ||
+			!slices.Contains(models, profile.Defaults[kind]) {
 			return errors.New("select a default from the configured models for text and vision")
 		}
 		seen := make(map[string]bool, len(models))

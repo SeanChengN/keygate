@@ -71,6 +71,7 @@ func TestAIAdminScopeAndRedaction(t *testing.T) {
 	r.PUT("/plans/:id/ai", h.PutAIPlan)
 	r.GET("/plans/:id/ai", h.GetAIPlan)
 	r.PUT("/entitlements/:id", h.UpdateEntitlement)
+	r.POST("/entitlements", h.CreateEntitlement)
 	r.POST("/inventory", h.CreateInventoryBatch)
 	r.GET("/licenses", h.ListLicenses)
 	r.GET("/licenses/:id/ai", h.GetLicenseAI)
@@ -156,6 +157,15 @@ func TestAIAdminScopeAndRedaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := `{"version":3,"provider_id":"jiji","name":"Synthetic","base_url":"https://api-slb.jiji.cc/v1","protocol":"openai","quota_adapter":"jiji","models":{"text":["astra","sol","luna"],"vision":["astra","terra","luna"]},"defaults":{"text":"sol","vision":"terra"}}`
+	invalid := strings.Replace(next, `"text":"sol"`, `"text":"unknown"`, 1)
+	createBody, _ := json.Marshal(map[string]string{
+		"plan_id": plan.ID, "feature": "license.ai_profile", "value_type": "string", "value": invalid,
+	})
+	recorder := httptest.NewRecorder()
+	r.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/entitlements", strings.NewReader(string(createBody))))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid default accepted on profile creation: %d", recorder.Code)
+	}
 	payload, _ := json.Marshal(map[string]string{"value": next, "expected_value": profile.Value})
 	updateProfile := func(foreign bool) *httptest.ResponseRecorder {
 		q := httptest.NewRequest(http.MethodPut, "/entitlements/"+profile.ID, strings.NewReader(string(payload)))
@@ -177,6 +187,35 @@ func TestAIAdminScopeAndRedaction(t *testing.T) {
 	}
 	if saved, readErr := s.FindEntitlementByID(ctx, profile.ID); readErr != nil || saved.Value != next {
 		t.Fatalf("profile update did not persist: %v", readErr)
+	}
+	ordinary := &model.Entitlement{PlanID: plan.ID, Feature: "review.quota", ValueType: "quota",
+		Value: "8", QuotaPeriod: "monthly", QuotaUnit: "jobs", StripeMeterEventName: "review_jobs"}
+	if err = s.CreateEntitlement(ctx, ordinary); err != nil {
+		t.Fatal(err)
+	}
+	editEntitlement := func(body string, foreign bool) *httptest.ResponseRecorder {
+		q := httptest.NewRequest(http.MethodPut, "/entitlements/"+ordinary.ID, strings.NewReader(body))
+		if foreign {
+			q.Header.Set("Test-Foreign-Scope", "1")
+		}
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, q)
+		return w
+	}
+	switchType := `{"value_type":"int","value":"9","quota_period":"","quota_unit":"","stripe_meter_event_name":"","expected":{"feature":"review.quota","value_type":"quota","value":"8","quota_period":"monthly","quota_unit":"jobs","stripe_meter_event_name":"review_jobs"}}`
+	if w = editEntitlement(switchType, true); w.Code != http.StatusForbidden {
+		t.Fatalf("foreign ordinary entitlement write returned %d", w.Code)
+	}
+	stale := strings.Replace(switchType, "monthly", "daily", 1)
+	if w = editEntitlement(stale, false); w.Code != http.StatusConflict {
+		t.Fatalf("stale quota metadata write returned %d", w.Code)
+	}
+	if w = editEntitlement(switchType, false); w.Code != http.StatusOK {
+		t.Fatalf("ordinary entitlement write returned %d", w.Code)
+	}
+	if saved, readErr := s.FindEntitlementByID(ctx, ordinary.ID); readErr != nil ||
+		saved.Value != "9" || saved.ValueType != "int" || saved.QuotaPeriod != "" || saved.QuotaUnit != "" || saved.StripeMeterEventName != "" {
+		t.Fatalf("quota conversion did not persist: %v", readErr)
 	}
 	update := func(body string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()

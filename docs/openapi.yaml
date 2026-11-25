@@ -22,8 +22,9 @@ info:
 
     ## Product features and day plans
 
-    `PUT /admin/products/{id}` accepts optional boolean
-    `inventory_enabled` and `package_ai_enabled` fields. Disabling a
+    `POST /admin/products` and `PUT /admin/products/{id}` accept optional boolean
+    `inventory_enabled` and `package_ai_enabled` fields. Both features default
+    to off on create. SaaS products cannot enable inventory. Disabling a
     feature stops new inventory or new AI bindings. Issued inventory and
     existing AI bindings remain usable according to their terms.
 

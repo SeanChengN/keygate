@@ -35,7 +35,8 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { useI18n } from "@/i18n"
-import { admin, type Entitlement, type Plan } from "@/lib/api"
+import { errorMessage } from "@/i18n/errors"
+import { admin, type Entitlement, type EntitlementValue, type Plan, type Product } from "@/lib/api"
 import { boolColor, formatDate } from "@/lib/utils"
 
 export default function PlansPage() {
@@ -278,7 +279,7 @@ export default function PlansPage() {
         <PlanDialog
           open
           onClose={() => setEditing(null)}
-          plan={editing}
+          plan={plans.find((entry) => entry.id === editing.id) ?? editing}
           products={products}
           onSubmit={(d) => updateMut.mutate({ id: editing.id, ...d })}
           loading={updateMut.isPending}
@@ -322,7 +323,7 @@ function PlanDialog({
   open: boolean
   onClose: () => void
   plan?: Plan
-  products: { id: string; name: string; type?: string; inventory_enabled?: boolean }[]
+  products: Product[]
   onSubmit: (data: Partial<Plan>) => void
   loading: boolean
   title: string
@@ -625,7 +626,13 @@ function PlanDialog({
         {plan && (
           <>
             <Separator />
-            <EntitlementSection planId={plan.id} entitlements={plan.entitlements || []} />
+            <EntitlementSection
+              planId={plan.id}
+              entitlements={plan.entitlements}
+              canCreateStudioProfile={
+                selectedProduct?.slug === "movaura-studio" && !!selectedProduct.package_ai_enabled
+              }
+            />
           </>
         )}
       </DialogContent>
@@ -633,64 +640,94 @@ function PlanDialog({
   )
 }
 
-function EntitlementSection({ planId, entitlements: initial }: { planId: string; entitlements: Entitlement[] }) {
-  const { t } = useI18n()
+const emptyEntitlement = {
+  feature: "",
+  value_type: "bool",
+  value: "true",
+  quota_period: "",
+  quota_unit: "",
+  stripe_meter_event_name: "",
+}
+
+function isAIProfile(feature: string) {
+  return feature === "studio.ai_profile" || feature === "license.ai_profile"
+}
+
+function EntitlementSection({
+  planId,
+  entitlements: initial,
+  canCreateStudioProfile,
+}: {
+  planId: string
+  entitlements?: Entitlement[]
+  canCreateStudioProfile: boolean
+}) {
+  const { t, locale } = useI18n()
   const qc = useQueryClient()
-  const [entitlements, setEntitlements] = useState(initial)
-  const [adding, setAdding] = useState(false)
-  const [newEnt, setNewEnt] = useState({
-    feature: "",
-    value_type: "bool",
-    value: "true",
-    quota_period: "",
-    quota_unit: "",
-    stripe_meter_event_name: "",
-  })
-  // confirmDelete shows the AlertDialog with the feature name before
-  // the irreversible delete fires. The button used to call
-  // deleteMut.mutate(e.id) directly — a stray click wiped a plan
-  // entitlement with no recourse.
+  const [entitlements, setEntitlements] = useState(initial ?? [])
+  const [editor, setEditor] = useState<{ original?: Entitlement } | null>(null)
+  const [newEnt, setNewEnt] = useState(emptyEntitlement)
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; feature: string } | null>(null)
 
   useEffect(() => {
-    setEntitlements(initial)
+    setEntitlements(initial ?? [])
   }, [initial])
 
-  const createMut = useMutation({
-    mutationFn: () =>
-      admin.createEntitlement({
-        plan_id: planId,
-        feature: newEnt.feature,
+  function applyEntitlement(saved: Entitlement) {
+    setEntitlements((rows) =>
+      rows.some((row) => row.id === saved.id)
+        ? rows.map((row) => (row.id === saved.id ? saved : row))
+        : [...rows, saved],
+    )
+  }
+
+  const save = useMutation({
+    mutationFn: () => {
+      const quota = newEnt.value_type === "quota"
+      const fields: EntitlementValue = {
         value_type: newEnt.value_type,
         value: newEnt.value,
-        ...(newEnt.value_type === "quota"
-          ? {
-              quota_period: newEnt.quota_period,
-              quota_unit: newEnt.quota_unit,
-              // Empty string means "no Stripe metered binding" —
-              // safe to always pass, server treats "" identically.
-              stripe_meter_event_name: newEnt.stripe_meter_event_name,
-            }
-          : {}),
-      } as {
-        plan_id: string
-        feature: string
-        value_type: string
-        value: string
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["admin", "plans"] })
-      setAdding(false)
-      setNewEnt({
-        feature: "",
-        value_type: "bool",
-        value: "true",
-        quota_period: "",
-        quota_unit: "",
-        stripe_meter_event_name: "",
-      })
+        quota_period: quota ? newEnt.quota_period : "",
+        quota_unit: quota ? newEnt.quota_unit : "",
+        stripe_meter_event_name: quota ? newEnt.stripe_meter_event_name : "",
+      }
+      if (editor?.original) {
+        const { id, feature, value_type, value, quota_period, quota_unit, stripe_meter_event_name } = editor.original
+        return admin.updateEntitlement(id, {
+          ...fields,
+          expected: { feature, value_type, value, quota_period, quota_unit, stripe_meter_event_name },
+        })
+      }
+      return admin.createEntitlement({ plan_id: planId, feature: newEnt.feature.trim(), ...fields })
+    },
+    onSuccess: (saved) => {
+      applyEntitlement(saved)
+      void qc.invalidateQueries({ queryKey: ["admin", "plans"] })
+      setEditor(null)
+    },
+    onError: (error) => {
+      if ("code" in error && error.code === "ENTITLEMENT_CHANGED") {
+        void qc.invalidateQueries({ queryKey: ["admin", "plans"] })
+      }
     },
   })
+
+  function openEditor(original?: Entitlement) {
+    save.reset()
+    setEditor({ original })
+    setNewEnt(
+      original
+        ? {
+            feature: original.feature,
+            value_type: original.value_type,
+            value: original.value,
+            quota_period: original.quota_period ?? "",
+            quota_unit: original.quota_unit ?? "",
+            stripe_meter_event_name: original.stripe_meter_event_name ?? "",
+          }
+        : emptyEntitlement,
+    )
+  }
 
   const deleteMut = useMutation({
     mutationFn: (id: string) => admin.deleteEntitlement(id),
@@ -704,9 +741,14 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-semibold">{t("plans.entitlements")}</h4>
-        <Button type="button" variant="outline" size="sm" onClick={() => setAdding(!adding)}>
-          <Plus className="h-3 w-3 mr-1" /> {t("common.create")}
-        </Button>
+        <div className="flex flex-wrap justify-end gap-2">
+          {canCreateStudioProfile && !entitlements.some((row) => isAIProfile(row.feature)) && (
+            <AIModelTiers planId={planId} onSaved={applyEntitlement} />
+          )}
+          <Button type="button" variant="outline" size="sm" disabled={save.isPending} onClick={() => openEditor()}>
+            <Plus className="h-3 w-3 mr-1" /> {t("common.create")}
+          </Button>
+        </div>
       </div>
       {entitlements.length > 0 && (
         <div className="space-y-2">
@@ -714,8 +756,8 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
             <div key={e.id} className="flex items-center justify-between bg-muted/50 rounded px-3 py-2 text-sm">
               <div>
                 <span className="font-medium">{e.feature}</span>
-                {["studio.ai_profile", "license.ai_profile"].includes(e.feature) ? (
-                  <AIModelTiers entitlement={e} />
+                {isAIProfile(e.feature) ? (
+                  <AIModelTiers entitlement={e} planId={planId} onSaved={applyEntitlement} />
                 ) : (
                   <span className="text-muted-foreground ml-2">
                     ({e.value_type}: {e.value})
@@ -728,34 +770,62 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
                   </span>
                 )}
               </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => setConfirmDelete({ id: e.id, feature: e.feature })}
-              >
-                <Trash2 className="h-3 w-3 text-destructive" />
-              </Button>
+              <div className="flex shrink-0 items-center gap-1">
+                {!isAIProfile(e.feature) && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={save.isPending}
+                    onClick={() => openEditor(e)}
+                  >
+                    <Pencil className="h-3 w-3" /> {t("common.edit")}
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => setConfirmDelete({ id: e.id, feature: e.feature })}
+                >
+                  <Trash2 className="h-3 w-3 text-destructive" />
+                </Button>
+              </div>
             </div>
           ))}
         </div>
       )}
-      {adding && (
+      {editor && (
         <div className="border rounded p-3 space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-2">
               <Label className="text-xs">{t("plans.feature")}</Label>
               <Input
+                aria-label={t("plans.feature")}
                 value={newEnt.feature}
-                onChange={(e) => setNewEnt((n) => ({ ...n, feature: e.target.value }))}
+                readOnly={!!editor.original}
+                onChange={(e) => {
+                  const feature = e.target.value
+                  setNewEnt((n) => ({
+                    ...n,
+                    feature,
+                    ...(isAIProfile(feature.trim()) && n.value_type !== "string"
+                      ? { value_type: "string", value: "" }
+                      : {}),
+                  }))
+                }}
                 placeholder={t("plans.featurePlaceholder")}
               />
             </div>
             <div className="space-y-2">
               <Label className="text-xs">{t("plans.valueType")}</Label>
-              <Select value={newEnt.value_type} onValueChange={(v) => setNewEnt((n) => ({ ...n, value_type: v }))}>
-                <SelectTrigger>
+              <Select
+                disabled={isAIProfile(newEnt.feature.trim())}
+                value={newEnt.value_type}
+                onValueChange={(v) => setNewEnt((n) => ({ ...n, value_type: v }))}
+              >
+                <SelectTrigger aria-label={t("plans.valueType")}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -763,16 +833,27 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
                   <SelectItem value="int">{t("plans.integer")}</SelectItem>
                   <SelectItem value="string">{t("plans.string")}</SelectItem>
                   <SelectItem value="quota">{t("plans.quota")}</SelectItem>
+                  <SelectItem value="flag">{t("plans.flag")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
+            <div className={isAIProfile(newEnt.feature.trim()) ? "col-span-2 space-y-2" : "space-y-2"}>
               <Label className="text-xs">{t("plans.value")}</Label>
-              <Input
-                value={newEnt.value}
-                onChange={(e) => setNewEnt((n) => ({ ...n, value: e.target.value }))}
-                placeholder={t("plans.valuePlaceholder")}
-              />
+              {isAIProfile(newEnt.feature.trim()) ? (
+                <textarea
+                  className="min-h-32 w-full rounded-md border bg-background p-2 font-mono text-sm"
+                  aria-label={t("plans.value")}
+                  value={newEnt.value}
+                  onChange={(e) => setNewEnt((n) => ({ ...n, value: e.target.value }))}
+                />
+              ) : (
+                <Input
+                  aria-label={t("plans.value")}
+                  value={newEnt.value}
+                  onChange={(e) => setNewEnt((n) => ({ ...n, value: e.target.value }))}
+                  placeholder={t("plans.valuePlaceholder")}
+                />
+              )}
             </div>
             {newEnt.value_type === "quota" && (
               <>
@@ -818,17 +899,22 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
               </>
             )}
           </div>
+          {save.isError && (
+            <p role="alert" className="text-sm text-destructive">
+              {errorMessage(save.error, locale)}
+            </p>
+          )}
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" size="sm" onClick={() => setAdding(false)}>
+            <Button type="button" variant="outline" size="sm" disabled={save.isPending} onClick={() => setEditor(null)}>
               {t("common.cancel")}
             </Button>
             <Button
               type="button"
               size="sm"
-              disabled={createMut.isPending || !newEnt.feature}
-              onClick={() => createMut.mutate()}
+              disabled={save.isPending || !newEnt.feature.trim()}
+              onClick={() => save.mutate()}
             >
-              {createMut.isPending ? t("common.loading") : t("plans.addEntitlement")}
+              {save.isPending ? t("common.loading") : t(editor.original ? "common.save" : "plans.addEntitlement")}
             </Button>
           </div>
         </div>

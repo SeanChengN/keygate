@@ -321,7 +321,8 @@ export const admin = {
     return get<{ products: Product[] }>(`/admin/products?${q}`)
   },
   getProduct: (id: string) => get<Product>(`/admin/products/${id}`),
-  createProduct: (data: { name: string; slug: string; type: string }) => post<Product>("/admin/products", data),
+  createProduct: (data: Pick<Product, "name" | "slug" | "type" | "inventory_enabled" | "package_ai_enabled">) =>
+    post<Product>("/admin/products", data),
   updateProduct: (id: string, data: Partial<Product>) => put<Product>(`/admin/products/${id}`, data),
   deleteProduct: (id: string) => del(`/admin/products/${id}`),
 
@@ -336,10 +337,12 @@ export const admin = {
   updatePlan: (id: string, data: Partial<Plan>) => put<Plan>(`/admin/plans/${id}`, data),
   deletePlan: (id: string) => del(`/admin/plans/${id}`),
 
-  createEntitlement: (data: { plan_id: string; feature: string; value_type: string; value: string }) =>
+  createEntitlement: (data: EntitlementValue & { plan_id: string; feature: string }) =>
     post<Entitlement>("/admin/entitlements", data),
-  updateEntitlement: (id: string, data: Partial<Entitlement> & { expected_value?: string }) =>
-    put<Entitlement>(`/admin/entitlements/${id}`, data),
+  updateEntitlement: (
+    id: string,
+    data: Partial<Entitlement> & { expected_value?: string; expected?: EntitlementValue & { feature: string } },
+  ) => put<Entitlement>(`/admin/entitlements/${id}`, data),
   deleteEntitlement: (id: string) => del(`/admin/entitlements/${id}`),
 
   listLicenses: (params?: {
@@ -751,6 +754,11 @@ export interface Plan {
   entitlements?: Entitlement[]
 }
 
+export type EntitlementValue = Pick<
+  Entitlement,
+  "value_type" | "value" | "quota_period" | "quota_unit" | "stripe_meter_event_name"
+>
+
 export interface Entitlement {
   id: string
   plan_id: string
@@ -759,6 +767,7 @@ export interface Entitlement {
   value: string
   quota_period?: string
   quota_unit?: string
+  stripe_meter_event_name?: string
 }
 
 export interface License {

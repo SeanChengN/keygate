@@ -49,6 +49,7 @@ export default function ProductsPage() {
 
   const createMut = useMutation({
     mutationFn: admin.createProduct,
+    onError: (error) => showToast(errorMessage(error, locale), "error"),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "products"] })
       setCreating(false)
@@ -177,13 +178,15 @@ export default function ProductsPage() {
       </Card>
 
       {/* Create Dialog */}
-      <ProductDialog
-        open={creating}
-        onClose={() => setCreating(false)}
-        onSubmit={(d) => createMut.mutate(d)}
-        loading={createMut.isPending}
-        title={t("products.createTitle")}
-      />
+      {creating && (
+        <ProductDialog
+          open
+          onClose={() => setCreating(false)}
+          onSubmit={(d) => createMut.mutate(d)}
+          loading={createMut.isPending}
+          title={t("products.createTitle")}
+        />
+      )}
 
       {/* Edit Dialog */}
       {editing && (
@@ -256,7 +259,8 @@ function ProductDialog({
       name,
       slug,
       type,
-      ...(product ? { inventory_enabled: type !== "saas" && stock, package_ai_enabled: ai } : {}),
+      inventory_enabled: type !== "saas" && stock,
+      package_ai_enabled: ai,
     })
   }
 
@@ -318,34 +322,32 @@ function ProductDialog({
               />
             </div>
           </div>
-          {product && (
-            <fieldset className="space-y-3 rounded-md border p-4">
-              <legend className="px-1 text-sm font-medium">{t("products.features")}</legend>
-              <div className="space-y-1">
-                <Label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={type !== "saas" && stock}
-                    disabled={type === "saas"}
-                    onChange={(event) => setStock(event.target.checked)}
-                  />
-                  {t("inventory.title")}
-                </Label>
-                <p className="text-xs text-muted-foreground">
-                  {t(type === "saas" ? "products.stockUnavailable" : "products.stockHint")}
-                </p>
-              </div>
-              <div className="space-y-1">
-                <Label className="flex items-center gap-2">
-                  <input type="checkbox" checked={ai} onChange={(event) => setAI(event.target.checked)} />
-                  {t("products.packageAI")}
-                </Label>
-                <p className="text-xs text-muted-foreground">
-                  {t(type === "saas" ? "products.aiDeliveryUnavailable" : "products.aiHint")}
-                </p>
-              </div>
-            </fieldset>
-          )}
+          <fieldset className="space-y-3 rounded-md border p-4">
+            <legend className="px-1 text-sm font-medium">{t("products.features")}</legend>
+            <div className="space-y-1">
+              <Label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={type !== "saas" && stock}
+                  disabled={type === "saas"}
+                  onChange={(event) => setStock(event.target.checked)}
+                />
+                {t("inventory.title")}
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                {t(type === "saas" ? "products.stockUnavailable" : "products.stockHint")}
+              </p>
+            </div>
+            <div className="space-y-1">
+              <Label className="flex items-center gap-2">
+                <input type="checkbox" checked={ai} onChange={(event) => setAI(event.target.checked)} />
+                {t("products.packageAI")}
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                {t(type === "saas" ? "products.aiDeliveryUnavailable" : "products.aiHint")}
+              </p>
+            </div>
+          </fieldset>
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={onClose}>
               {t("common.cancel")}

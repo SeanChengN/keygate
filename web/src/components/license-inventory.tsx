@@ -12,10 +12,18 @@ import { errorMessage } from "@/i18n/errors"
 import { admin, inventory, licenseAI, type Plan } from "@/lib/api"
 import { formatDate } from "@/lib/utils"
 
-export function InventoryManager({ selected, clear }: { selected: string[]; clear: () => void }) {
+export function InventoryManager({
+  initialOpen = false,
+  selected,
+  clear,
+}: {
+  initialOpen?: boolean
+  selected: string[]
+  clear: () => void
+}) {
   const { t, locale } = useI18n()
   const qc = useQueryClient()
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(initialOpen)
   const [product, setProduct] = useState("")
   const [plan, setPlan] = useState("")
   const [quantity, setQuantity] = useState(10)

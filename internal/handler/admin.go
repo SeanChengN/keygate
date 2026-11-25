@@ -73,9 +73,11 @@ func (h *AdminHandler) GetProduct(c *gin.Context) {
 
 func (h *AdminHandler) CreateProduct(c *gin.Context) {
 	var req struct {
-		Name string `json:"name" binding:"required"`
-		Slug string `json:"slug" binding:"required"`
-		Type string `json:"type" binding:"required"`
+		Name             string `json:"name" binding:"required"`
+		Slug             string `json:"slug" binding:"required"`
+		Type             string `json:"type" binding:"required"`
+		InventoryEnabled *bool  `json:"inventory_enabled"`
+		PackageAIEnabled *bool  `json:"package_ai_enabled"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "name, slug, and type are required")
@@ -94,7 +96,18 @@ func (h *AdminHandler) CreateProduct(c *gin.Context) {
 		return
 	}
 
-	p := &model.Product{Name: req.Name, Slug: req.Slug, Type: req.Type}
+	if (req.InventoryEnabled != nil || req.PackageAIEnabled != nil) && !inventoryAdmin(c) {
+		return
+	}
+	p := &model.Product{
+		Name: req.Name, Slug: req.Slug, Type: req.Type,
+		InventoryEnabled: req.InventoryEnabled != nil && *req.InventoryEnabled,
+		PackageAIEnabled: req.PackageAIEnabled != nil && *req.PackageAIEnabled,
+	}
+	if p.InventoryEnabled && !model.ProductSupports(p.Type, model.CapActivations) {
+		response.Err(c, http.StatusConflict, "INVENTORY_DEVICE_ACTIVATION_REQUIRED", store.ErrProductInventoryType.Error())
+		return
+	}
 	if err := h.Store.CreateProduct(c, p); err != nil {
 		response.Err(c, http.StatusConflict, "DUPLICATE", "product slug already exists")
 		return
@@ -103,7 +116,10 @@ func (h *AdminHandler) CreateProduct(c *gin.Context) {
 	h.Store.Audit(c, &model.AuditLog{
 		Entity: "product", EntityID: p.ID, Action: "created",
 		ActorType: "admin", ActorID: adminID(c),
-		Changes: map[string]any{"name": req.Name, "slug": req.Slug, "type": req.Type},
+		Changes: map[string]any{
+			"name": req.Name, "slug": req.Slug, "type": req.Type,
+			"inventory_enabled": p.InventoryEnabled, "package_ai_enabled": p.PackageAIEnabled,
+		},
 	})
 
 	response.Created(c, p)
@@ -632,17 +648,30 @@ func (h *AdminHandler) UpdateEntitlement(c *gin.Context) {
 		return
 	}
 	previous := *e
+	plan, err := h.Store.FindPlanByID(c, e.PlanID)
+	if err != nil {
+		response.NotFound(c, "plan not found")
+		return
+	}
+	if !requireKeyProductScope(c, plan.ProductID) {
+		return
+	}
 	var req struct {
-		ExpectedValue        *string `json:"expected_value"`
-		Feature              *string `json:"feature"`
-		ValueType            *string `json:"value_type"`
-		Value                *string `json:"value"`
-		QuotaPeriod          *string `json:"quota_period"`
-		QuotaUnit            *string `json:"quota_unit"`
-		StripeMeterEventName *string `json:"stripe_meter_event_name"`
+		Expected             *entitlementSnapshot `json:"expected"`
+		ExpectedValue        *string              `json:"expected_value"`
+		Feature              *string              `json:"feature"`
+		ValueType            *string              `json:"value_type"`
+		Value                *string              `json:"value"`
+		QuotaPeriod          *string              `json:"quota_period"`
+		QuotaUnit            *string              `json:"quota_unit"`
+		StripeMeterEventName *string              `json:"stripe_meter_event_name"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request body")
+		return
+	}
+	if req.Expected != nil && !req.Expected.matches(&previous) {
+		response.Err(c, http.StatusConflict, "ENTITLEMENT_CHANGED", "The entitlement changed. Reopen the editor and try again.")
 		return
 	}
 	if req.Feature != nil {
@@ -672,11 +701,6 @@ func (h *AdminHandler) UpdateEntitlement(c *gin.Context) {
 	}
 
 	if req.ExpectedValue != nil && previous.Feature == "studio.ai_profile" {
-		plan, err := h.Store.FindPlanByID(c, e.PlanID)
-		if err != nil {
-			response.NotFound(c, "plan not found")
-			return
-		}
 		if !h.aiProduct(c, plan.ProductID) {
 			return
 		}
@@ -705,8 +729,8 @@ func (h *AdminHandler) UpdateEntitlement(c *gin.Context) {
 		}
 	}
 	var updateErr error
-	if model.IsAIProfile(e.Feature) && req.Value != nil || req.ExpectedValue != nil {
-		updateErr = h.Store.UpdateEntitlementIfCurrent(c, e, previous.Value)
+	if model.IsAIProfile(e.Feature) && req.Value != nil || req.ExpectedValue != nil || req.Expected != nil {
+		updateErr = h.Store.UpdateEntitlementIfCurrent(c, e, &previous)
 	} else {
 		updateErr = h.Store.UpdateEntitlement(c, e)
 	}
@@ -719,6 +743,21 @@ func (h *AdminHandler) UpdateEntitlement(c *gin.Context) {
 		return
 	}
 	response.OK(c, e)
+}
+
+type entitlementSnapshot struct {
+	Feature              string `json:"feature"`
+	ValueType            string `json:"value_type"`
+	Value                string `json:"value"`
+	QuotaPeriod          string `json:"quota_period"`
+	QuotaUnit            string `json:"quota_unit"`
+	StripeMeterEventName string `json:"stripe_meter_event_name"`
+}
+
+func (s entitlementSnapshot) matches(e *model.Entitlement) bool {
+	return s.Feature == e.Feature && s.ValueType == e.ValueType && s.Value == e.Value &&
+		s.QuotaPeriod == e.QuotaPeriod && s.QuotaUnit == e.QuotaUnit &&
+		s.StripeMeterEventName == e.StripeMeterEventName
 }
 
 func (h *AdminHandler) validateAIProfileEntitlement(c *gin.Context, e *model.Entitlement) bool {
@@ -735,6 +774,10 @@ func (h *AdminHandler) validateAIProfileEntitlement(c *gin.Context, e *model.Ent
 		return false
 	}
 	if _, err := service.AIProfileBinding(&model.Plan{Entitlements: []*model.Entitlement{e}}); err != nil {
+		response.BadRequest(c, err.Error())
+		return false
+	}
+	if err := validateProfileValue(e.Value); err != nil {
 		response.BadRequest(c, err.Error())
 		return false
 	}
